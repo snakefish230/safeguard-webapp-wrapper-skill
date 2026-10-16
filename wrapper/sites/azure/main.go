@@ -25,6 +25,7 @@ const (
 	nextBtn = `#idSIButton9`
 	otpSel  = `#idTxtBx_SAOTCC_OTC, input[name="otc"]`
 	otpBtn  = `#idSubmit_SAOTCC_Continue, #idSIButton9`
+	otpErr  = `#idSpan_SAOTCC_Error_OTC`
 	kmsiNo  = `#idBtn_Back`
 )
 
@@ -57,8 +58,9 @@ func main() {
 	steps := []chromedp.Action{
 		core.Type(userSel, user),
 		core.Click(nextBtn),
-		// Some tenants show an account-type picker ("Work or school account") — click it if it appears.
-		core.ClickIfPresent(`#aadTile, div[data-test-id="aadTile"]`, 3*time.Second),
+		// Some tenants show an account-type picker ("Work or school account").
+		// Raced against the password field so tenants without one don't wait.
+		core.ClickIfPresentUnless(`#aadTile, div[data-test-id="aadTile"]`, passSel, 10*time.Second),
 		core.Secret(passSel, pass),
 		core.Click(nextBtn),
 		// #idBtn_Back is "Back" on the password page and "No" on "Stay signed in?".
@@ -70,9 +72,10 @@ func main() {
 		steps = append(steps,
 			// "Sign in another way" is also on the verification-code page, so
 			// only take that detour when the OTP box is not already showing.
-			core.ClickIfPresentUnless(`#signInAnotherWay`, otpSel, 10*time.Second, 4*time.Second),
-			core.ClickIfPresentUnless(`div[data-value="PhoneAppOTP"]`, otpSel, 2*time.Second, 4*time.Second),
-			core.TOTPSubmit(otpSel, otpBtn, t, *totpMin, *totpTries),
+			// Both are raced, so neither path waits on a fixed timeout.
+			core.ClickIfPresentUnless(`#signInAnotherWay`, otpSel, 20*time.Second),
+			core.ClickIfPresentUnless(`div[data-value="PhoneAppOTP"]`, otpSel, 10*time.Second),
+			core.TOTPSubmit(otpSel, otpBtn, otpErr, t, *totpMin, *totpTries),
 		)
 	}
 	if *staySignedIn {

@@ -36,7 +36,41 @@ rejected, and a *different* code from the `Target.TotpCodes` snapshot is tried (
 attempts, `-totp-attempts`). `-totp-min-valid` now defaults to 10s.
 
 Both faults are pinned by `tests/e2e/run-azure-otp.sh`, which drives the real wrapper against a
-mock Entra whose code page deliberately carries the link and rejects the first code.
+mock Entra whose code page deliberately carries the link and rejects the first code. It runs
+the scenario twice: once with the code page as the default and once with push approval as the
+default, so the detour is proven both to be skipped and to still work when it is needed.
+
+## Removing the dead waiting, 2026-10-16
+
+The fixes above were correct but slow, because each optional step waited out a fixed timeout
+before testing the alternative. A debug run showed 26s on a path that needed 3s:
+
+- **20s** was spent after a rejected code, waiting for the OTP field to vanish. It never would.
+  `TOTPSubmit` now races the field disappearing (accepted) against `#idSpan_SAOTCC_Error_OTC`
+  appearing (refused), so the retry starts at once. The error must be probed *before* the
+  field: a refused code leaves the field on screen, so checking the field first matches every
+  time and hides the error. An error left over from the previous attempt is ignored — typing
+  normally clears it, and if it is still up the wrapper falls back to detecting success only.
+- **3s** was a fixed `#aadTile` probe on tenants with no account picker. It is now raced
+  against the password field, just as the "another way" link is raced against the OTP box
+  (`core.WaitAny`). No branch pays a timeout it does not need.
+
+The mock also caught the wrapper reporting failure on a code the site had accepted, so the
+test now asserts both facts: the site accepted the code *and* the wrapper agreed.
+
+## Keystrokes can be dropped
+
+A mock run produced username `lice@contoso...` — the leading `a` was lost, because the first
+raw keystroke goes nowhere if the browser has not finished focusing the field. Silently
+truncating a username or password surfaces much later as a failed sign-in, so `Type`/`Secret`
+now read the field back and, on mismatch, assign through the `value` prototype setter and
+dispatch `input`/`change` (Entra's sign-in is React, so a plain `e.value =` is ignored).
+Values are still never logged — only lengths, and only on mismatch.
+
+## Launching it
+
+A correct wrapper and policy can still fail to start from the SPP GUI. See
+`references/scalus-launch.md`: SCALUS's stock Linux handler cannot represent a RemoteApp.
 
 SPP setup: asset NetworkAddress = tenant domain (e.g. `contoso.onmicrosoft.com`); account name = UPN
 prefix or full UPN. Push / number-matching MFA cannot be injected; the user approves on their phone.

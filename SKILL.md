@@ -25,7 +25,7 @@ wrapper/sites/<name>/main.go   one wrapper per site (aws, generic, _template)
 scripts/publish-remoteapp.ps1 copy+verify+register RemoteApp on jump host via WinRM
 scripts/build.sh <site>|all    vet + unit tests + GOOS=windows build -> dist/<site>.exe(+.sha256)
 tests/e2e/run.sh     real Chrome + Xvfb against a mock 3-step login (proves the core works)
-references/          launcher contract, deployment, safeguard-config (MCP/API), per-site selectors
+references/          launcher contract, deployment, scalus-launch, safeguard-config (MCP/API), per-site selectors
 ```
 
 ## Workflow (for "build a wrapper for <site>")
@@ -68,6 +68,11 @@ references/          launcher contract, deployment, safeguard-config (MCP/API), 
 6. **Publish (optional, remote)**: `scripts/publish-remoteapp.ps1` copies the exe to the jump
    host over WinRM, verifies its SHA256, locks down the folder ACL, and registers the Launcher
    as a RemoteApp (Registry mode = standalone host, Collection mode = RDS Connection Broker).
+7. **Check how the user will actually launch it**: a correct policy still fails if the client
+   drops the RemoteApp alias. "Start RDP Session" goes through SCALUS, whose stock Linux
+   handler (Remmina) cannot represent a RemoteApp at all, while a downloaded `.rdp` works.
+   If one route works and the other does not, the fault is client-side, not the policy —
+   see `references/scalus-launch.md`.
    It prints the SPP Application Alias (`||<Alias>`) and Display Name. Run it from a Windows
    admin box with WinRM to the host. Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
 

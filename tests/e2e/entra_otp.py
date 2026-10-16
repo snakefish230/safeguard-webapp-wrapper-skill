@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1])
 OUT = sys.argv[2]
-state = {"detour": False, "codes": [], "accepted": False, "user": "", "pass": ""}
+state = {"detour": False, "codes": [], "accepted": False, "user": "", "password": ""}
 
 PAGE = """<!doctype html><html><body>
 <div id="v_user"><input name="loginfmt" data-id="i0116">
@@ -22,18 +22,21 @@ PAGE = """<!doctype html><html><body>
 
 <div id="v_pass" hidden><input type="password" name="passwd">
  <button data-id="idBtn_Back" onclick="show('user')">Back</button>
- <button data-id="idSIButton9" onclick="p=val('passwd');show('otp')">Sign in</button></div>
+ <button data-id="idSIButton9" onclick="p=val('passwd');show(PUSH?'push':'otp')">Sign in</button></div>
+
+<div id="v_push" hidden><div>Approve a sign in request</div>
+ <a data-id="signInAnotherWay" href="#" onclick="detour();show('pick')">I can&#39;t use my app right now</a></div>
 
 <div id="v_pick" hidden>
  <div data-value="PhoneAppNotification">Approve a request</div>
  <div data-value="PhoneAppOTP" onclick="show('otp')">Use a verification code</div></div>
 
 <div id="v_otp" hidden>
- <input data-id="idTxtBx_SAOTCC_OTC" name="otc">
+ <input data-id="idTxtBx_SAOTCC_OTC" name="otc" oninput="clearErr()">
  <a data-id="signInAnotherWay" href="#" onclick="detour();show('pick')">I can&#39;t use my app right now</a>
  <button data-id="idBtn_Back" onclick="show('pass')">Back</button>
  <button data-id="idSubmit_SAOTCC_Continue" onclick="verify()">Verify</button>
- <div id="otpErr" hidden>The code you entered isn&#39;t valid.</div></div>
+ <div id="idSpan_SAOTCC_Error_OTC" hidden>The code you entered isn&#39;t valid.</div></div>
 
 <div id="v_kmsi" hidden><button data-id="idBtn_Back" onclick="show('done')">No</button>
  <button data-id="idSIButton9" onclick="show('done')">Yes</button></div>
@@ -41,12 +44,15 @@ PAGE = """<!doctype html><html><body>
 <div id="v_done" hidden><h1 id="welcome">Portal</h1></div>
 <script>
 var u="",p="";
+// ?push=1 makes the tenant default to push approval, so the wrapper must take
+// the "sign in another way" detour instead of skipping it.
+var PUSH = location.search.indexOf('push=1') >= 0;
 function val(n){return document.getElementsByName(n)[0].value;}
 // The real page swaps views out of the DOM, so ids like #idSIButton9 and
 // #idBtn_Back are unique at any moment. Only the active view carries its real
 // id here; the rest are parked under a suffix.
 function show(v){
-  ['user','pass','pick','otp','kmsi','done'].forEach(function(n){
+  ['user','pass','push','pick','otp','kmsi','done'].forEach(function(n){
     document.getElementById('v_'+n).hidden = (n!==v);
   });
   document.querySelectorAll('[data-id]').forEach(function(el){
@@ -57,12 +63,15 @@ function show(v){
   });
 }
 function detour(){ fetch('/rec?detour=1'); }
+// Real sign-in pages drop the "invalid code" message as soon as you retype, so
+// a stale error must not linger into the next attempt.
+function clearErr(){ document.getElementById('idSpan_SAOTCC_Error_OTC').hidden=true; }
 function verify(){
   var box=document.getElementById('idTxtBx_SAOTCC_OTC'), c=box.value;
   fetch('/rec?code='+encodeURIComponent(c)).then(r=>r.text()).then(function(t){
     if(t==='ok'){ fetch('/rec?u='+encodeURIComponent(u)+'&p='+encodeURIComponent(p))
                     .then(function(){show('kmsi');}); }
-    else { document.getElementById('otpErr').hidden=false; box.value=''; }
+    else { document.getElementById('idSpan_SAOTCC_Error_OTC').hidden=false; box.value=''; }
   });
 }
 show('user');
@@ -74,6 +83,15 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        # Each scenario needs a clean slate: the "reject the first code" rule is
+        # counted per run, not per process.
+        if self.path.startswith("/reset"):
+            state.update(detour=False, codes=[], accepted=False, user="", password="")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"reset")
+            return
         if self.path.startswith("/rec"):
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -82,7 +100,7 @@ class H(BaseHTTPRequestHandler):
                 state["detour"] = True
             if "u" in q:
                 state["user"] = q["u"][0]
-                state["pass"] = q.get("p", [""])[0]
+                state["password"] = q.get("p", [""])[0]
             if "code" in q:
                 state["codes"].append(q["code"][0])
                 # Reject the first code, accept any later one.
