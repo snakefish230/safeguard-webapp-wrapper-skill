@@ -124,6 +124,26 @@ GET /v4/Me/RequestEntitlements?...  # (as a member) the account should be reques
 ```
 End-to-end test: request it in the SPP portal → Launch / Download RDP → browser opens signed in.
 
+## Jump host credential policy (for publish-remoteapp.ps1 checkout)
+Only needed when the user can't already request Password access to the RDS admin account.
+```
+GET  /v4/Assets?filter=NetworkAddress eq '10.0.7.103' or Name eq '<name>'&fields=Id,Name
+GET  /v4/AssetAccounts?filter=Asset.Id eq <id> and Name eq '<acct>'&fields=Id,Name,HasPassword
+GET  /v4/Me?fields=Id,Name                                    # requester to add as member
+POST /v4/Roles {"Name":"RDS Jump Host Admin","Description":"Checkout for RemoteApp publishing"}
+POST /v4/Roles/{roleId}/Members/Add [{"Id":<userId>}]
+POST /v4/AccessPolicies {
+  "Name":"RDS Jump Host Admin - Password", "RoleId":<roleId>,
+  "AccessRequestProperties":{"AccessRequestType":"Password","ChangePasswordAfterCheckin":true},
+  "RequesterProperties":{"DefaultReleaseDurationHours":1,"MaximumReleaseDurationHours":4,"RequireReasonComment":true},
+  "ApproverProperties":{"RequireApproval":false}
+}
+POST /v4/AccessPolicies/{policyId}/ScopeItems/Add [{"ScopeItemType":"Account","Id":<accountId>}]
+```
+`ChangePasswordAfterCheckin:true` rotates the admin password after the script checks it in, if
+the asset's platform can rotate it. If the user is already in an entitlement that should hold
+this, add a Password policy to that role instead. Ask which they prefer.
+
 ## Rollback (if the user wants to undo)
 Delete in reverse order: `DELETE /v4/AccessPolicies/{id}`, then the role if it was newly created
 (`DELETE /v4/Roles/{id}`), then any newly created accounts/assets. Track what was *created*

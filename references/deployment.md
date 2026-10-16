@@ -12,6 +12,17 @@ cd scripts
   -CollectionName "Safeguard Apps" -Wrapper ..\dist\aws.exe -Alias AWSConsole -DisplayName "AWS Console"
 ./publish-remoteapp.ps1 -ComputerName jumprdp -Alias AWSConsole -Remove
 ```
+Credentials from Safeguard instead of `-Credential` (needs `Install-Module safeguard-ps`):
+```powershell
+./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Wrapper ..\dist\azure.exe -Alias AzurePortal `
+  -DisplayName "Azure Portal" -SafeguardAppliance spp.safeguardlab.net `
+  -SafeguardAsset 10.0.7.103 -SafeguardAccount Administrator -CreateAccessRequest
+```
+Reuses an open Password request for that account or creates one. It checks the password out
+straight into a PSCredential (never displayed) and checks it in at exit (`-SafeguardKeepRequest`
+to keep it open). Use `-SafeguardAuth Certificate -SafeguardCertThumbprint <tp>` for
+non-interactive runs.
+
 Preflight checks: the Launcher exists (`-LauncherPath` if it's installed somewhere else),
 Chrome or Edge is present, and the alias isn't already taken (`-Force`). The folder gets a
 locked-down ACL (Admins/SYSTEM full, Users read+execute) so a user can't swap the exe.

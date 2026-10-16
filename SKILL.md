@@ -1,7 +1,7 @@
 ---
 name: safeguard-webapp-wrapper
 description: "Use when building a Safeguard RDP-app web wrapper (Go/chromedp .exe) for a site. Generates, tests, builds and documents a Windows exe that the OI-SG-RemoteApp-Launcher runs on the RDS jump host to open a browser and inject Safeguard credentials."
-version: 1.2.0
+version: 1.3.0
 metadata:
   hermes:
     tags: [safeguard, one-identity, pam, rdp-applications, chromedp, go]
@@ -59,9 +59,45 @@ references/          launcher contract, deployment, safeguard-config (MCP/API), 
    host over WinRM, verifies its SHA256, locks down the folder ACL, and registers the Launcher
    as a RemoteApp (Registry mode = standalone host, Collection mode = RDS Connection Broker).
    It prints the SPP Application Alias (`||<Alias>`) and Display Name. Run it from a Windows
-   admin box with WinRM to the host; don't try to run it from this container. Example:
-   `./publish-remoteapp.ps1 -ComputerName jumprdp -Wrapper ..\dist\aws.exe -Alias AWSConsole -DisplayName "AWS Console" -WrapperArgs '-set account=123456789012' -Credential (Get-Credential)`
-   Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
+   admin box with WinRM to the host. Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
+
+   **Credential for the jump host: use the Safeguard checkout, never chat.** Ask the user:
+   *"Which SPP account should be used to administer the RDS host (name, and the asset it's on)?"*
+   Then use the Safeguard MCP to check requestability. These are read-only calls and return
+   metadata only:
+   - `GET /v4/Me/AccessRequestAssets?filter=Name eq '<asset>' or NetworkAddress eq '<asset>'` → assetId
+   - `GET /v4/Me/RequestEntitlements?assetIds=<assetId>&accessRequestType=Password` → is the
+     account listed (Account.Name)? Which policy?
+   - `GET /v4/Me/ActionableRequests`, or `GET /v4/AccessRequests?filter=AccountName eq '<acct>' and AccessRequestType eq 'Password'`
+     and look for State RequestAvailable/PasswordCheckedOut/PendingApproval/Approved → is there
+     already an open request?
+
+   Then branch:
+   - **Open request exists** → tell the user its ID/state; the script will reuse it.
+   - **Requestable, no open request** → ask *"Create a Password access request for <acct>?"*
+     If yes, pass `-CreateAccessRequest` to the script, which creates it under the user's own
+     identity so the audit trail is right. If the policy needs approval, say so; the script exits
+     12 and can be re-run after approval.
+   - **Not requestable** (no policy grants the user Password access) → ask *"There's no access
+     policy that lets you check out <acct>. Create one?"* If yes, follow
+     `references/safeguard-config.md` → "Jump host credential policy", confirming each POST.
+     Then continue as above.
+
+   Then give the user the command to run. The checkout happens inside the script with
+   `safeguard-ps` (password → SecureString → PSCredential). It's never printed and is checked
+   in at exit:
+   ```powershell
+   ./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Wrapper ..\dist\azure.exe -Alias AzurePortal `
+     -DisplayName "Azure Portal" -SafeguardAppliance spp.example.com -SafeguardAsset 10.0.7.103 `
+     -SafeguardAccount Administrator [-CreateAccessRequest] [-SafeguardAuth Browser|DeviceCode|Certificate]
+   ```
+   `-SafeguardStatusOnly` prints requestability and the open request as JSON, a quick pre-check
+   without the MCP. Exit codes: 10 not requestable, 11 no request and no
+   `-CreateAccessRequest`, 12 pending approval.
+   **Never** use `Safeguard_RetrieveCredential` or `POST .../CheckOutPassword` through the MCP
+   for this. Hermes doesn't honour MCP `audience` annotations, so the password would land in
+   the model context and transcript.
+
 7. **Configure Safeguard (optional, needs the Safeguard MCP)**. Follow
    `references/safeguard-config.md`. Check that a `Safeguard_*` MCP tool exists first; if it
    doesn't, explain how to install https://github.com/OneIdentity/safeguard-mcp and stop this
@@ -104,6 +140,9 @@ With `--use-stdin` (Launcher ≥ 3.0.1) the Launcher writes one JSON line to std
   user isn't dropped from the session.
 - Push/FIDO/number-matching MFA can't be injected. Stop after password and let the user approve.
 - Windows Defender may flag freshly built Go exes (seen upstream); sign them or add an exclusion.
+- WinRM to an **IP address** uses NTLM. The admin box needs `Set-Item WSMan:\localhost\Client\TrustedHosts <ip>`
+  (or HTTPS listener + `-UseSSL`); Kerberos/keytab doesn't work against a bare IP. The script
+  logs in as `<ComputerName>\<account>` for local accounts (override with `-SafeguardLoginName`).
 - publish-remoteapp.ps1 refuses `-password`/`{password}` and double quotes in -WrapperArgs.
   Credentials always go via `--use-stdin`. It sets `CommandLineSetting=2`, so only the exact
   registered command line can run. Registry value names follow standard Windows RemoteApp
