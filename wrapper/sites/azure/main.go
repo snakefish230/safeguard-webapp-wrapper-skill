@@ -33,7 +33,8 @@ func main() {
 	url := fs.String("url", "https://portal.azure.com", "start URL (e.g. https://portal.azure.com/#@contoso.onmicrosoft.com)")
 	domain := fs.String("domain", "", "UPN suffix if the account name has no @ (default: Target.AccountDomainName, then asset address)")
 	staySignedIn := fs.Bool("stay-signed-in", false, "answer Yes to 'Stay signed in?' (default No)")
-	totpMin := fs.Int("totp-min-valid", 5, "min seconds a TOTP code must remain valid")
+	totpMin := fs.Int("totp-min-valid", 10, "min seconds a TOTP code must remain valid when picked")
+	totpTries := fs.Int("totp-attempts", 2, "how many TOTP codes to try before giving up")
 	opts := core.StdFlags(fs, core.Options{Incognito: true})
 	in := core.Load("azure", fs)
 	o := opts()
@@ -67,11 +68,11 @@ func main() {
 	}
 	if t := in.Get("Target.TotpCodes"); t != "" {
 		steps = append(steps,
-			// If push is default, switch to "use a verification code".
-			core.ClickIfPresent(`#signInAnotherWay`, 4*time.Second),
-			core.ClickIfPresent(`div[data-value="PhoneAppOTP"]`, 4*time.Second),
-			core.TOTP(otpSel, t, *totpMin),
-			core.Click(otpBtn),
+			// "Sign in another way" is also on the verification-code page, so
+			// only take that detour when the OTP box is not already showing.
+			core.ClickIfPresentUnless(`#signInAnotherWay`, otpSel, 10*time.Second, 4*time.Second),
+			core.ClickIfPresentUnless(`div[data-value="PhoneAppOTP"]`, otpSel, 2*time.Second, 4*time.Second),
+			core.TOTPSubmit(otpSel, otpBtn, t, *totpMin, *totpTries),
 		)
 	}
 	if *staySignedIn {

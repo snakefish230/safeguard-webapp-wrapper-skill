@@ -44,10 +44,20 @@ references/          launcher contract, deployment, safeguard-config (MCP/API), 
 3. **Generate the site**: copy `wrapper/sites/_template/` → `wrapper/sites/<site>/`, remove the
    `//go:build ignore` line, fill in URL + steps using core helpers:
    `Type`, `Secret` (not logged), `Click`, `Enter`, `ClickIfPresent(sel, d)` for optional
-   prompts, `FirstVisible(map[sel]action)` for branching forms, `TOTP(sel, json, minValid)`,
+   prompts, `ClickIfPresentUnless(sel, skip, skipWait, d)` when that optional control also
+   exists on the page you are heading for, `FirstVisible(map[sel]action)` for branching forms,
+   `TOTPSubmit(sel, btn, json, minValid, attempts)`,
    `WaitVisible`, `WaitURLContains`. Site-specific non-secret options become flags
    (`fs.String/Bool`), read after `core.Load`. If the site fits a plain form, just emit a
    `generic.exe` command line instead of new code.
+
+   Two MFA rules, both learned the hard way on Entra (see `references/sites/azure.md`):
+   - **Never pick a TOTP code before its field is visible.** The code has ~30s of life and any
+     page transition you wait through is spent out of it, so a correct code arrives expired.
+     `TOTPSubmit` waits, then picks. Prefer it over bare `TOTP`.
+   - **A "use another method" link is often on the code page as well.** Clicking it
+     unconditionally detours through the method picker and back. Gate it on the OTP field not
+     already being present.
 4. **Build & test**: `scripts/build.sh <site>`; run `tests/e2e/run.sh` after any change to
    `core/`. Optionally smoke-test the site wrapper on Linux against the real login page with
    dummy creds (build without GOOS, pipe stdin JSON, `DISPLAY` via Xvfb, Chrome at

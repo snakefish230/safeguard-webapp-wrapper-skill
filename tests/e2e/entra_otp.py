@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Mock Entra sign-in reproducing the two OTP faults seen on portal.azure.com.
+
+The verification-code page deliberately carries BOTH the OTP box and the
+"#signInAnotherWay" link, as the real page does. A wrapper that clicks the link
+unconditionally takes a detour through the method picker; this records it.
+
+The first code submitted is always rejected, so the retry path is exercised too.
+Results are appended as JSON to argv[2].
+"""
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+OUT = sys.argv[2]
+state = {"detour": False, "codes": [], "accepted": False, "user": "", "pass": ""}
+
+PAGE = """<!doctype html><html><body>
+<div id="v_user"><input name="loginfmt" data-id="i0116">
+ <button data-id="idSIButton9" onclick="u=val('loginfmt');show('pass')">Next</button></div>
+
+<div id="v_pass" hidden><input type="password" name="passwd">
+ <button data-id="idBtn_Back" onclick="show('user')">Back</button>
+ <button data-id="idSIButton9" onclick="p=val('passwd');show('otp')">Sign in</button></div>
+
+<div id="v_pick" hidden>
+ <div data-value="PhoneAppNotification">Approve a request</div>
+ <div data-value="PhoneAppOTP" onclick="show('otp')">Use a verification code</div></div>
+
+<div id="v_otp" hidden>
+ <input data-id="idTxtBx_SAOTCC_OTC" name="otc">
+ <a data-id="signInAnotherWay" href="#" onclick="detour();show('pick')">I can&#39;t use my app right now</a>
+ <button data-id="idBtn_Back" onclick="show('pass')">Back</button>
+ <button data-id="idSubmit_SAOTCC_Continue" onclick="verify()">Verify</button>
+ <div id="otpErr" hidden>The code you entered isn&#39;t valid.</div></div>
+
+<div id="v_kmsi" hidden><button data-id="idBtn_Back" onclick="show('done')">No</button>
+ <button data-id="idSIButton9" onclick="show('done')">Yes</button></div>
+
+<div id="v_done" hidden><h1 id="welcome">Portal</h1></div>
+<script>
+var u="",p="";
+function val(n){return document.getElementsByName(n)[0].value;}
+// The real page swaps views out of the DOM, so ids like #idSIButton9 and
+// #idBtn_Back are unique at any moment. Only the active view carries its real
+// id here; the rest are parked under a suffix.
+function show(v){
+  ['user','pass','pick','otp','kmsi','done'].forEach(function(n){
+    document.getElementById('v_'+n).hidden = (n!==v);
+  });
+  document.querySelectorAll('[data-id]').forEach(function(el){
+    el.id = el.dataset.id + '_parked';
+  });
+  document.querySelectorAll('#v_'+v+' [data-id]').forEach(function(el){
+    el.id = el.dataset.id;
+  });
+}
+function detour(){ fetch('/rec?detour=1'); }
+function verify(){
+  var box=document.getElementById('idTxtBx_SAOTCC_OTC'), c=box.value;
+  fetch('/rec?code='+encodeURIComponent(c)).then(r=>r.text()).then(function(t){
+    if(t==='ok'){ fetch('/rec?u='+encodeURIComponent(u)+'&p='+encodeURIComponent(p))
+                    .then(function(){show('kmsi');}); }
+    else { document.getElementById('otpErr').hidden=false; box.value=''; }
+  });
+}
+show('user');
+</script></body></html>"""
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path.startswith("/rec"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            body = "ok"
+            if "detour" in q:
+                state["detour"] = True
+            if "u" in q:
+                state["user"] = q["u"][0]
+                state["pass"] = q.get("p", [""])[0]
+            if "code" in q:
+                state["codes"].append(q["code"][0])
+                # Reject the first code, accept any later one.
+                if len(state["codes"]) == 1:
+                    body = "no"
+                else:
+                    state["accepted"] = True
+            with open(OUT, "w") as f:
+                json.dump(state, f)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(PAGE.encode())
+
+
+HTTPServer(("127.0.0.1", PORT), H).serve_forever()
