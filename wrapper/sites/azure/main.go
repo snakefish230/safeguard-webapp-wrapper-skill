@@ -1,0 +1,79 @@
+// azure — Safeguard RDP-app wrapper for the Azure portal (Entra ID cloud-only users).
+//
+// Launcher (>= 3.0.1):
+//   --use-stdin --cmd "C:\SafeguardWrappers\azure.exe" --args "-incognito"
+// Safeguard values: username, password, optional Target.TotpCodes, optional Target.AccountDomainName.
+// Username: if the SPP account name has no '@', it is suffixed with -domain or {Target.AccountDomainName}
+// or the asset network address (set the asset's NetworkAddress to the tenant, e.g. contoso.onmicrosoft.com).
+//
+// Flow verified 2026-10-14: login.microsoftonline.com username page (#i0116 name=loginfmt, Next #idSIButton9).
+// Password/TOTP/KMSI selectors from One Identity's web_generic Azure sample with name-based fallbacks.
+package main
+
+import (
+	"flag"
+	"strings"
+	"time"
+
+	"github.com/chromedp/chromedp"
+	"sgwrap/core"
+)
+
+const (
+	userSel = `input[name="loginfmt"]`
+	passSel = `input[name="passwd"]`
+	nextBtn = `#idSIButton9`
+	otpSel  = `#idTxtBx_SAOTCC_OTC, input[name="otc"]`
+	otpBtn  = `#idSubmit_SAOTCC_Continue, #idSIButton9`
+	kmsiNo  = `#idBtn_Back`
+)
+
+func main() {
+	fs := flag.NewFlagSet("azure", flag.ContinueOnError)
+	url := fs.String("url", "https://portal.azure.com", "start URL (e.g. https://portal.azure.com/#@contoso.onmicrosoft.com)")
+	domain := fs.String("domain", "", "UPN suffix if the account name has no @ (default: Target.AccountDomainName, then asset address)")
+	staySignedIn := fs.Bool("stay-signed-in", false, "answer Yes to 'Stay signed in?' (default No)")
+	totpMin := fs.Int("totp-min-valid", 5, "min seconds a TOTP code must remain valid")
+	opts := core.StdFlags(fs, core.Options{Incognito: true})
+	in := core.Load("azure", fs)
+	o := opts()
+
+	user := in.Must("username")
+	if !strings.Contains(user, "@") {
+		d := *domain
+		if d == "" {
+			d = in.Get("Target.AccountDomainName")
+		}
+		if d == "" && strings.Contains(in.Get("asset"), ".") {
+			d = in.Get("asset")
+		}
+		if d != "" {
+			user = user + "@" + d
+		}
+	}
+	pass := in.Must("password")
+
+	steps := []chromedp.Action{
+		core.Type(userSel, user),
+		core.Click(nextBtn),
+		// Some tenants show an account-type picker ("Work or school account") — click it if it appears.
+		core.ClickIfPresent(`#aadTile, div[data-test-id="aadTile"]`, 3*time.Second),
+		core.Secret(passSel, pass),
+		core.Click(nextBtn),
+	}
+	if t := in.Get("Target.TotpCodes"); t != "" {
+		steps = append(steps,
+			// If push is default, switch to "use a verification code".
+			core.ClickIfPresent(`#signInAnotherWay`, 4*time.Second),
+			core.ClickIfPresent(`div[data-value="PhoneAppOTP"]`, 4*time.Second),
+			core.TOTP(otpSel, t, *totpMin),
+			core.Click(otpBtn),
+		)
+	}
+	if *staySignedIn {
+		steps = append(steps, core.ClickIfPresent(`#idSIButton9`, 15*time.Second))
+	} else {
+		steps = append(steps, core.ClickIfPresent(kmsiNo, 15*time.Second))
+	}
+	core.Run(o, *url, steps...)
+}
