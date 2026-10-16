@@ -61,6 +61,11 @@ references/          launcher contract, deployment, safeguard-config (MCP/API), 
    It prints the SPP Application Alias (`||<Alias>`) and Display Name. Run it from a Windows
    admin box with WinRM to the host. Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
 
+   **Ask where the wrapper should live on the jump host** (`-RemoteDir`). The script's default
+   is `C:\SafeguardWrappers`, but sites commonly keep wrappers somewhere else (e.g.
+   `C:\OI_Custom`) and all wrappers on a host should sit together. Confirm the directory with
+   the user before publishing, and use the same path in the Launcher `--cmd` line.
+
    **Credential for the jump host: use the Safeguard checkout, never chat.** Ask the user:
    *"Which SPP account should be used to administer the RDS host (name, and the asset it's on)?"*
    Then use the Safeguard MCP to check requestability. These are read-only calls and return

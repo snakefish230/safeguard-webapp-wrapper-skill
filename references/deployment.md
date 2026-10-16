@@ -5,7 +5,8 @@ From a Windows admin workstation with WinRM access to the jump host:
 ```powershell
 cd scripts
 ./publish-remoteapp.ps1 -ComputerName jumprdp.corp.local -Wrapper ..\dist\aws.exe `
-  -Alias AWSConsole -DisplayName "AWS Console" -WrapperArgs '-set account=123456789012' `
+  -Alias AWSConsole -DisplayName "AWS Console" -RemoteDir C:\OI_Custom `
+  -WrapperArgs '-set account=123456789012' `
   -Credential (Get-Credential) -WhatIf      # drop -WhatIf to apply
 # Full RDS deployment instead of a standalone host:
 ./publish-remoteapp.ps1 -ComputerName rdsh01 -Mode Collection -ConnectionBroker cb01 `
@@ -30,8 +31,9 @@ locked-down ACL (Admins/SYSTEM full, Users read+execute) so a user can't swap th
 ## Manual: jump host (RDS)
 1. Install Chrome (or use Edge), the OI-SG-RemoteApp-Launcher, and the
    [Remote Application Publisher](https://github.com/OneIdentity/RemoteApplicationPublisher).
-2. Copy `<site>.exe` to e.g. `C:\SafeguardWrappers\`, verify it against `<site>.exe.sha256`
-   (`Get-FileHash`), and restrict write access (Administrators only).
+2. Copy `<site>.exe` to the host's wrapper directory — ask the user; the script default is
+   `C:\SafeguardWrappers`, but many hosts use something else (e.g. `C:\OI_Custom`). Verify it
+   against `<site>.exe.sha256` (`Get-FileHash`), and restrict write access (Administrators only).
 3. Publisher → New app: Name `AWSConsole`, Full Name `AWS Console`, enable **Use One Identity
    Launcher**. Command line parameters:
    `--use-stdin --cmd "C:\SafeguardWrappers\aws.exe" --args "-set account=123456789012"`

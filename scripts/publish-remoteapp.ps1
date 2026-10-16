@@ -64,6 +64,9 @@ param(
     [switch] $UseSSL,
     [switch] $Remove,
     [switch] $Force,                         # overwrite an existing app with the same alias
+    [switch] $Local,                         # run directly on this host (no PSSession); -ComputerName is informational
+    [switch] $SkipAcl,                       # leave the folder ACL alone (shared dir that already holds other apps)
+    [string] $ExpectedSha256,                # verify -Wrapper against this hash (use when staged by another tool)
 
     # ---- Safeguard credential checkout for the WinRM connection (alternative to -Credential) ----
     [string] $SafeguardAppliance,            # SPP host
@@ -108,7 +111,8 @@ function Connect-Sg {
         'DeviceCode'  { Connect-Safeguard @a -DeviceCode | Out-Null }
         'Certificate' {
             if (-not $SafeguardCertThumbprint) { throw '-SafeguardCertThumbprint is required for Certificate auth.' }
-            Connect-Safeguard @a -IdentityProvider ($SafeguardIdentityProvider ? $SafeguardIdentityProvider : 'certificate') -Thumbprint $SafeguardCertThumbprint | Out-Null
+            $idp = if ($SafeguardIdentityProvider) { $SafeguardIdentityProvider } else { 'certificate' }
+            Connect-Safeguard @a -IdentityProvider $idp -Thumbprint $SafeguardCertThumbprint | Out-Null
         }
     }
     $script:SgConnected = $true
@@ -196,12 +200,24 @@ if ($SafeguardAccount) {
 $sessArgs = @{ ComputerName = $ComputerName }
 if ($Credential) { $sessArgs.Credential = $Credential }
 if ($UseSSL)     { $sessArgs.UseSSL = $true }
-try { $s = New-PSSession @sessArgs } catch { if ($SafeguardAccount) { Close-Sg }; throw }
+$s = $null
+if (-not $Local) {
+    try { $s = New-PSSession @sessArgs } catch { if ($SafeguardAccount) { Close-Sg }; throw }
+}
+
+# Runs a script block on the target: through the PSSession, or in-process with -Local.
+# -Local exists so the script can be staged onto the jump host and run natively there,
+# which avoids the WinRM double hop (and lets non-Windows admin boxes drive it).
+function Invoke-Target {
+    param([object[]] $ArgumentList, [scriptblock] $ScriptBlock)
+    if ($Local) { Invoke-Command -ArgumentList $ArgumentList -ScriptBlock $ScriptBlock }
+    else { Invoke-Command -Session $s -ArgumentList $ArgumentList -ScriptBlock $ScriptBlock }
+}
 try {
     # ---------- remove ----------
     if ($Remove) {
         if ($PSCmdlet.ShouldProcess("$ComputerName/$Alias", 'Remove RemoteApp')) {
-            Invoke-Command -Session $s -ArgumentList $Mode,$Alias,$ConnectionBroker,$CollectionName -ScriptBlock {
+            Invoke-Target -ArgumentList $Mode,$Alias,$ConnectionBroker,$CollectionName -ScriptBlock {
                 param($Mode,$Alias,$CB,$Coll)
                 if ($Mode -eq 'Collection') {
                     Import-Module RemoteDesktop
@@ -225,13 +241,16 @@ try {
         $expected = ((Get-Content $shaFile -Raw).Trim() -split '\s+')[0]
         if ($expected -ne $localHash) { throw "Local $exeName does not match $shaFile (expected $expected, got $localHash)." }
     }
+    if ($ExpectedSha256 -and $ExpectedSha256 -replace '\s','' -ne $localHash) {
+        throw "$exeName does not match -ExpectedSha256 (expected $ExpectedSha256, got $localHash)."
+    }
     if ($Mode -eq 'Collection' -and (-not $ConnectionBroker -or -not $CollectionName)) {
         throw 'Collection mode needs -ConnectionBroker and -CollectionName.'
     }
     $cmdLine = Build-CommandLine $remoteExe $WrapperArgs $LauncherDebug.IsPresent
 
     # ---------- preflight ----------
-    $pre = Invoke-Command -Session $s -ArgumentList $LauncherPath,$Alias,$Mode -ScriptBlock {
+    $pre = Invoke-Target -ArgumentList $LauncherPath,$Alias,$Mode -ScriptBlock {
         param($L,$Alias,$Mode)
         [pscustomobject]@{
             Launcher = Test-Path $L
@@ -246,21 +265,28 @@ try {
 
     # ---------- copy + verify ----------
     if ($PSCmdlet.ShouldProcess("${ComputerName}:$remoteExe", 'Copy wrapper')) {
-        Invoke-Command -Session $s -ArgumentList $RemoteDir -ScriptBlock {
-            param($d)
+        Invoke-Target -ArgumentList $RemoteDir,$SkipAcl.IsPresent -ScriptBlock {
+            param($d,$skipAcl)
             if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
             # Admins/SYSTEM full, Users read+execute, no inheritance: users must not be able to swap the exe.
-            & icacls $d /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+            # -SkipAcl leaves a shared directory (one that already holds other published apps) untouched.
+            if (-not $skipAcl) {
+                & icacls $d /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+            }
         }
-        Copy-Item -Path $Wrapper -Destination $remoteExe -ToSession $s -Force
-        $remoteHash = Invoke-Command -Session $s -ArgumentList $remoteExe -ScriptBlock { param($p) (Get-FileHash $p -Algorithm SHA256).Hash }
+        if ($Local) {
+            if ((Resolve-Path $Wrapper).Path -ne $remoteExe) { Copy-Item -Path $Wrapper -Destination $remoteExe -Force }
+        } else {
+            Copy-Item -Path $Wrapper -Destination $remoteExe -ToSession $s -Force
+        }
+        $remoteHash = Invoke-Target -ArgumentList $remoteExe -ScriptBlock { param($p) (Get-FileHash $p -Algorithm SHA256).Hash }
         if ($remoteHash -ne $localHash) { throw "Hash mismatch after copy: local $localHash remote $remoteHash" }
         Write-Host "Copied and verified $remoteExe ($localHash)"
     }
 
     # ---------- publish ----------
     if ($PSCmdlet.ShouldProcess("$ComputerName/$Alias", "Publish RemoteApp ($Mode)")) {
-        Invoke-Command -Session $s -ArgumentList $Mode,$Alias,$DisplayName,$LauncherPath,$cmdLine,$IconPath,$ConnectionBroker,$CollectionName -ScriptBlock {
+        Invoke-Target -ArgumentList $Mode,$Alias,$DisplayName,$LauncherPath,$cmdLine,$IconPath,$ConnectionBroker,$CollectionName -ScriptBlock {
             param($Mode,$Alias,$Name,$Launcher,$CmdLine,$Icon,$CB,$Coll)
             if ($Mode -eq 'Collection') {
                 Import-Module RemoteDesktop
@@ -276,16 +302,21 @@ try {
                 if (-not (Test-Path $base)) { New-Item $base -Force | Out-Null }
                 New-ItemProperty $base -Name fDisabledAllowList -Value 0 -PropertyType DWord -Force | Out-Null
                 $k = New-Item -Path "$base\Applications\$Alias" -Force
+                # ShortPath mirrors what the Remote Application Publisher writes for its own entries.
+                $short = try { (New-Object -ComObject Scripting.FileSystemObject).GetFile($Launcher).ShortPath } catch { $Launcher }
                 $vals = [ordered]@{
                     Name                = @($Name,'String')
                     Path                = @($Launcher,'String')
                     VPath               = @($Launcher,'String')
+                    ShortPath           = @($short,'String')
                     CommandLineSetting  = @(2,'DWord')        # 2 = require exactly RequiredCommandLine
                     RequiredCommandLine = @($CmdLine,'String')
                     ShowInTSWA          = @(0,'DWord')
-                    IconPath            = @($(if ($Icon) { $Icon } else { $Launcher }),'String')
-                    IconIndex           = @(0,'DWord')
                     SecurityDescriptor  = @('','String')
+                }
+                if ($Icon) {
+                    $vals.IconPath  = @($Icon,'String')
+                    $vals.IconIndex = @(0,'DWord')
                 }
                 foreach ($n in $vals.Keys) {
                     New-ItemProperty -Path $k.PSPath -Name $n -Value $vals[$n][0] -PropertyType $vals[$n][1] -Force | Out-Null
@@ -302,6 +333,6 @@ try {
     Write-Host "  Application Alias        : ||$Alias"
 }
 finally {
-    Remove-PSSession $s -ErrorAction SilentlyContinue
+    if ($s) { Remove-PSSession $s -ErrorAction SilentlyContinue }
     if ($SafeguardAccount) { Close-Sg }
 }
