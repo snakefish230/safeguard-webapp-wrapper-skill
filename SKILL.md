@@ -1,7 +1,7 @@
 ---
 name: safeguard-webapp-wrapper
 description: "Use when building a Safeguard RDP-app web wrapper (Go/chromedp .exe) for a site. Generates, tests, builds and documents a Windows exe that the OI-SG-RemoteApp-Launcher runs on the RDS jump host to open a browser and inject Safeguard credentials."
-version: 1.0.0
+version: 1.2.0
 metadata:
   hermes:
     tags: [safeguard, one-identity, pam, rdp-applications, chromedp, go]
@@ -25,7 +25,7 @@ wrapper/sites/<name>/main.go   one wrapper per site (aws, generic, _template)
 scripts/publish-remoteapp.ps1 copy+verify+register RemoteApp on jump host via WinRM
 scripts/build.sh <site>|all    vet + unit tests + GOOS=windows build -> dist/<site>.exe(+.sha256)
 tests/e2e/run.sh     real Chrome + Xvfb against a mock 3-step login (proves the core works)
-references/          launcher contract, deployment, per-site selector notes
+references/          launcher contract, deployment, safeguard-config (MCP/API), per-site selectors
 ```
 
 ## Workflow (for "build a wrapper for <site>")
@@ -62,6 +62,20 @@ references/          launcher contract, deployment, per-site selector notes
    admin box with WinRM to the host; don't try to run it from this container. Example:
    `./publish-remoteapp.ps1 -ComputerName jumprdp -Wrapper ..\dist\aws.exe -Alias AWSConsole -DisplayName "AWS Console" -WrapperArgs '-set account=123456789012' -Credential (Get-Credential)`
    Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
+7. **Configure Safeguard (optional, needs the Safeguard MCP)**. Follow
+   `references/safeguard-config.md`. Check that a `Safeguard_*` MCP tool exists first; if it
+   doesn't, explain how to install https://github.com/OneIdentity/safeguard-mcp and stop this
+   step. Ask the user which appliance (MCP server) to use, then `Safeguard_Connect`. Make the
+   decisions below in **one** clarify call where possible:
+   - Target asset/account for the web app: existing (look it up and confirm) or **create**?
+   - Jump host asset/account: existing or **create**?
+   - Entitlement: **new** (name + members) or **add to existing** (pick from list)?
+   - Approval required? Release duration? Reason comment required?
+   Then: Step 0 lookups → create any missing assets/accounts → role → access policy (type
+   `RemoteDesktopApplication`, ApplicationDisplayName/Alias from step 6) → scope item for the
+   target account → verify `InvalidConnectionPolicy=false`. Show each POST body to the user and
+   get confirmation before running any write. Record the IDs you create so a rollback never
+   touches existing objects.
 
 ## Launcher contract (summary — full details in references/launcher-contract.md)
 Publish the **Launcher** as the RemoteApp, wrapper as `--cmd`:
@@ -96,6 +110,11 @@ With `--use-stdin` (Launcher ≥ 3.0.1) the Launcher writes one JSON line to std
   behaviour; diff them against one app made by the Publisher the first time it's used.
 - pwsh for syntax checks: `/opt/data/tools/bin/pwsh` with `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`
   (no libicu). Parser-only; remoting can't run from the container.
+- Safeguard config: **never** set passwords or TOTP seeds through the MCP or chat. The user
+  enters them in the SPP UI; verify with `HasPassword` / `HasTotpAuthenticator`. Call
+  `Safeguard_Schema` before the first POST on each appliance, because fields vary by SPP
+  version. Entitlement = `/v4/Roles`. RDP-app settings live in
+  `SessionProperties.RemoteDesktopApplicationProperties`, and the alias has a `||` prefix.
 - Toolchain on this host: Go at `/opt/data/tools/bin/go` (GOPATH/GOCACHE under
   `/opt/data/tools`), Chrome for Testing at `/opt/data/tools/chrome-linux64/`. Use `Xvfb :97`
   directly because `xvfb-run` fails (no `xauth`).
