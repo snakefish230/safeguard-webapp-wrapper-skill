@@ -55,6 +55,23 @@ func WaitVisible(sel string) chromedp.Action {
 	return logged("wait "+sel, chromedp.WaitVisible(sel, chromedp.ByQuery))
 }
 
+// WaitGone waits until sel is no longer visible, at most d. It never fails: if
+// the element is still there it just continues. Use it to pin a page transition
+// before an optional click, when the same selector exists on both pages (e.g.
+// Entra's #idBtn_Back is "Back" on the password page and "No" on "Stay signed in?").
+func WaitGone(sel string, d time.Duration) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		c, cancel := context.WithTimeout(ctx, d)
+		defer cancel()
+		if err := chromedp.Run(c, chromedp.WaitNotVisible(sel, chromedp.ByQuery)); err != nil {
+			slog.Debug("still visible after wait", "sel", sel)
+		} else {
+			slog.Debug("gone", "sel", sel)
+		}
+		return nil
+	})
+}
+
 // ClickIfPresent clicks sel if it appears within d; otherwise continues.
 // Useful for cookie banners, "Stay signed in?" prompts, etc.
 func ClickIfPresent(sel string, d time.Duration) chromedp.Action {

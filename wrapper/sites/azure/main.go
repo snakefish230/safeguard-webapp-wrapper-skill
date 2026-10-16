@@ -60,6 +60,10 @@ func main() {
 		core.ClickIfPresent(`#aadTile, div[data-test-id="aadTile"]`, 3*time.Second),
 		core.Secret(passSel, pass),
 		core.Click(nextBtn),
+		// #idBtn_Back is "Back" on the password page and "No" on "Stay signed in?".
+		// Wait for the password field to go away so the later optional clicks
+		// can't land on the password page and navigate backwards.
+		core.WaitGone(passSel, 20*time.Second),
 	}
 	if t := in.Get("Target.TotpCodes"); t != "" {
 		steps = append(steps,
