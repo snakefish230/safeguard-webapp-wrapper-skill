@@ -149,7 +149,11 @@ With `--use-stdin` (Launcher ≥ 3.0.1) the Launcher writes one JSON line to std
   (or HTTPS listener + `-UseSSL`); Kerberos/keytab doesn't work against a bare IP. The script
   logs in as `<ComputerName>\<account>` for local accounts (override with `-SafeguardLoginName`).
 - publish-remoteapp.ps1 refuses `-password`/`{password}` and double quotes in -WrapperArgs.
-  Credentials always go via `--use-stdin`. It sets `CommandLineSetting=2`, so only the exact
+  Credentials always go via `--use-stdin`. Legacy `--args "{username} {password}"` substitution
+  puts the real password on a command line, which is exposed to any process listing
+  (`Win32_Process`, Task Manager) and captured by 4688-with-command-line, Sysmon and most EDR;
+  `--use-stdin` keeps it on an in-process pipe. Existing apps on a host may still use the legacy
+  form — check before assuming the host is clean. It sets `CommandLineSetting=2`, so only the exact
   registered command line can run. Registry value names follow standard Windows RemoteApp
   behaviour; diff them against one app made by the Publisher the first time it's used.
 - pwsh for syntax checks: `/opt/data/tools/bin/pwsh` with `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`
