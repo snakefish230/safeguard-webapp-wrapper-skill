@@ -8,11 +8,39 @@ cd scripts
   -Alias AWSConsole -DisplayName "AWS Console" -RemoteDir C:\OI_Custom `
   -WrapperArgs '-set account=123456789012' `
   -Credential (Get-Credential) -WhatIf      # drop -WhatIf to apply
-# Full RDS deployment instead of a standalone host:
-./publish-remoteapp.ps1 -ComputerName rdsh01 -Mode Collection -ConnectionBroker cb01 `
-  -CollectionName "Safeguard Apps" -Wrapper ..\dist\aws.exe -Alias AWSConsole -DisplayName "AWS Console"
 ./publish-remoteapp.ps1 -ComputerName jumprdp -Alias AWSConsole -Remove
 ```
+
+### Which store gets written (`-Mode`)
+`-Mode Auto` (default) detects this and prints what it chose. Don't override it without reason:
+publishing to the wrong store looks like it succeeded but the app never appears.
+
+| Host | Mode | Store |
+|---|---|---|
+| Standalone jump host, no RDS deployment | `Registry` | `TSAppAllowList\Applications\<Alias>` |
+| Full RDS deployment (a collection exists) | `Collection` | broker → `CentralPublishedResources\PublishedFarms\<farm>\Applications\<Alias>` |
+
+On a deployment host the broker owns `TSAppAllowList` and rewrites it from the collection, so a
+hand-written entry there publishes nothing. `-Mode Registry` refuses on such a host unless `-Force`.
+
+Detection reads the registry and `root\cimv2\rdms` directly, **not** the RDMS cmdlets: over WinRM
+those need a second hop to the broker and fail misleadingly with "A Remote Desktop Services
+deployment does not exist" / "RD Connection Broker server is not available" on a host that plainly
+has one. For the same reason Collection mode runs `New-/Set-RDRemoteApp` from a short-lived SYSTEM
+scheduled task on the target (SYSTEM authenticates as the computer account) — no CredSSP, no
+password on disk.
+
+Two Collection-mode quirks the script handles:
+- `New-RDRemoteApp` aborts with "Could not find the specified icon" when the launcher exe has no
+  icon resource; it retries with `-FallbackIconPath` (default `imageres.dll`).
+- It always passes `-Alias`. Letting RDS generate one produces e.g. `OISGRemoteAppLauncher(1)`,
+  which differs from an existing `OISGRemoteAppLauncher (1)` only by a space. After publishing it
+  re-reads the app and fails if the stored alias or command line isn't what was asked for.
+
+The alias must match the SPP policy's **Application Alias** exactly, as `||<Alias>`. Hosts
+published with the Remote Application Publisher name every app after the launcher exe, giving
+`OISGRemoteAppLauncher`, `OISGRemoteAppLauncher (1)`, `(2)`, ... — match the host's convention.
+
 Credentials from Safeguard instead of `-Credential` (needs `Install-Module safeguard-ps`):
 ```powershell
 ./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Wrapper ..\dist\azure.exe -Alias AzurePortal `

@@ -4,11 +4,23 @@
     the One Identity RemoteApp Launcher as a RemoteApp that runs it.
 
 .DESCRIPTION
-    Mode "Registry" (default; standalone jump host): writes
+    Mode "Auto" (default) detects which kind of host this is and picks the right store. Publishing
+    to the wrong one looks like it worked but the app never appears in the collection, so prefer Auto.
+
+    Mode "Registry" (standalone jump host, no RDS deployment): writes
       HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\<Alias>
     over WinRM, like the Remote Application Publisher does.
-    Mode "Collection" (full RDS deployment): calls New-/Set-RDRemoteApp against the Connection Broker
-    from the jump host session (RemoteDesktop module required there).
+
+    Mode "Collection" (full RDS deployment): calls New-/Set-RDRemoteApp against the Connection Broker,
+    which writes CentralPublishedResources\PublishedFarms\<farm>\Applications\<Alias> and mirrors
+    TSAppAllowList itself. On a deployment host, TSAppAllowList belongs to the broker: hand-writing an
+    entry there does not publish anything, so Registry mode refuses to run unless -Force.
+
+    The RDMS cmdlets (Get-RDServer, Get-/New-RDRemoteApp) need a logon session that can authenticate
+    onward to the broker. Over WinRM that is a second hop, and they fail with the misleading
+    "A Remote Desktop Services deployment does not exist" / "RD Connection Broker server is not
+    available". Collection mode therefore runs them from a short-lived SYSTEM scheduled task on the
+    target, which has the network identity they need - no CredSSP and no password on disk.
 
     Always: copies <Wrapper>.exe to -RemoteDir over the PS session, compares SHA256 with the
     local .sha256 file / local hash, and restricts write access on the remote dir to
@@ -49,17 +61,22 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [string] $ComputerName,
-    [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9_\-]+$')] [string] $Alias,
+    [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9 ._()\-]*$')] [string] $Alias,
     [string] $Wrapper,                       # local path to <site>.exe (not needed with -Remove)
     [string] $DisplayName = $Alias,
     [string] $WrapperArgs = '',              # non-secret wrapper flags, become Launcher --args
     [string] $RemoteDir = 'C:\SafeguardWrappers',
     [string] $LauncherPath = 'C:\Program Files\OneIdentity\OI-SG-RemoteApp-Launcher\OI-SG-RemoteApp-Launcher.exe',
     [switch] $LauncherDebug,                 # adds --enable-debug
-    [ValidateSet('Registry','Collection')] [string] $Mode = 'Registry',
+    [ValidateSet('Auto','Registry','Collection')] [string] $Mode = 'Auto',
     [string] $ConnectionBroker,
     [string] $CollectionName,
     [string] $IconPath,                      # optional .ico/.exe path on the remote host
+    # New-RDRemoteApp insists on extracting an icon and fails the whole publish with
+    # "Could not find the specified icon" when the launcher exe has no icon resource.
+    # Used only if -IconPath was not given and the iconless attempt fails.
+    [string] $FallbackIconPath = 'C:\Windows\System32\imageres.dll',
+    [bool]   $ShowInWebAccess = $true,       # Collection mode; match the other apps in the collection
     [pscredential] $Credential,
     [switch] $UseSSL,
     [switch] $Remove,
@@ -213,16 +230,109 @@ function Invoke-Target {
     if ($Local) { Invoke-Command -ArgumentList $ArgumentList -ScriptBlock $ScriptBlock }
     else { Invoke-Command -Session $s -ArgumentList $ArgumentList -ScriptBlock $ScriptBlock }
 }
+
+# Runs a script block on the target as SYSTEM, via a short-lived scheduled task.
+# The RDMS cmdlets need a logon session that can authenticate to the Connection Broker; a WinRM
+# session cannot (second hop). SYSTEM authenticates as the computer account, which the broker
+# accepts, so this avoids CredSSP and never puts a password on disk.
+function Invoke-TargetAsSystem {
+    param([object[]] $ArgumentList = @(), [scriptblock] $ScriptBlock)
+    $payload = [Management.Automation.PSSerializer]::Serialize(@($ArgumentList))
+    $out = Invoke-Target -ArgumentList $ScriptBlock.ToString(), $payload -ScriptBlock {
+        param($body, $payload)
+        $tag    = 'sgPublish_' + [guid]::NewGuid().ToString('N')
+        $dir    = Join-Path $env:SystemRoot 'Temp'
+        $script = Join-Path $dir "$tag.ps1"
+        $result = Join-Path $dir "$tag.xml"
+        # Single-quoted here-strings: nothing in $body or $payload is expanded or re-parsed here.
+        $inner = @"
+`$ErrorActionPreference = 'Stop'
 try {
+    `$a  = [Management.Automation.PSSerializer]::Deserialize(@'
+$payload
+'@)
+    `$sb = [scriptblock]::Create(@'
+$body
+'@)
+    `$r = & `$sb @a
+    [Management.Automation.PSSerializer]::Serialize(@{ ok = `$true; data = `$r }) | Set-Content -Path '$result' -Encoding UTF8
+} catch {
+    [Management.Automation.PSSerializer]::Serialize(@{ ok = `$false; err = `$_.Exception.Message }) | Set-Content -Path '$result' -Encoding UTF8
+}
+"@
+        Set-Content -Path $script -Value $inner -Encoding UTF8
+        try {
+            $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`""
+            $pri = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            Register-ScheduledTask -TaskName $tag -Action $act -Principal $pri -Force | Out-Null
+            Start-ScheduledTask -TaskName $tag
+            $n = 0
+            while ((Get-ScheduledTask -TaskName $tag).State -ne 'Ready' -and $n -lt 300) { Start-Sleep -Milliseconds 500; $n++ }
+            $n = 0
+            while (-not (Test-Path $result) -and $n -lt 20) { Start-Sleep -Milliseconds 500; $n++ }
+            if (-not (Test-Path $result)) { throw "SYSTEM task $tag produced no result (timed out)." }
+            Get-Content -Path $result -Raw
+        } finally {
+            Unregister-ScheduledTask -TaskName $tag -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-Item $script, $result -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $r = [Management.Automation.PSSerializer]::Deserialize($out)
+    if (-not $r.ok) { throw "On $ComputerName (as SYSTEM): $($r.err)" }
+    $r.data
+}
+
+# What kind of RemoteApp host is this? Read-only, and readable over plain WinRM:
+# deliberately avoids the RDMS cmdlets, which misreport "deployment does not exist" on a second hop.
+function Get-RdsDeployment {
+    Invoke-Target -ArgumentList @() -ScriptBlock {
+        $farms = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\CentralPublishedResources\PublishedFarms'
+        $names = if (Test-Path $farms) { @(Get-ChildItem $farms | Select-Object -ExpandProperty PSChildName) } else { @() }
+        $coll = $null
+        try { $coll = Get-CimInstance -Namespace root\cimv2\rdms -ClassName Win32_RDSHCollection -ErrorAction Stop | Select-Object -First 1 } catch { }
+        $broker = $null
+        try { $broker = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\ClusterSettings' -ErrorAction Stop).SessionDirectoryLocation } catch { }
+        [pscustomobject]@{
+            Farms          = $names
+            CollectionName = if ($coll) { $coll.Name } else { $null }
+            Broker         = $broker
+        }
+    }
+}
+try {
+    # ---------- decide which store owns RemoteApps on this host ----------
+    $dep = Get-RdsDeployment
+    $hasDeployment = $dep.Farms.Count -gt 0 -or $dep.CollectionName
+    if ($Mode -eq 'Auto') {
+        $Mode = if ($hasDeployment) { 'Collection' } else { 'Registry' }
+        Write-Host "Detected mode: $Mode$(if ($hasDeployment) { " (collection '$($dep.CollectionName)', broker '$($dep.Broker)')" })"
+    }
+    if ($Mode -eq 'Registry' -and $hasDeployment -and -not $Force) {
+        throw ("$ComputerName has an RDS deployment (collection '$($dep.CollectionName)'), where the broker owns " +
+               'TSAppAllowList. A hand-written entry there is silently ignored and never appears in the collection. ' +
+               'Use -Mode Collection (or -Force to override).')
+    }
+    if ($Mode -eq 'Collection') {
+        if (-not $CollectionName) { $CollectionName = $dep.CollectionName }
+        if (-not $ConnectionBroker) { $ConnectionBroker = $dep.Broker }
+        if (-not $CollectionName -or -not $ConnectionBroker) {
+            throw 'Collection mode needs -ConnectionBroker and -CollectionName (could not detect them).'
+        }
+    }
+
     # ---------- remove ----------
     if ($Remove) {
         if ($PSCmdlet.ShouldProcess("$ComputerName/$Alias", 'Remove RemoteApp')) {
-            Invoke-Target -ArgumentList $Mode,$Alias,$ConnectionBroker,$CollectionName -ScriptBlock {
-                param($Mode,$Alias,$CB,$Coll)
-                if ($Mode -eq 'Collection') {
+            if ($Mode -eq 'Collection') {
+                Invoke-TargetAsSystem -ArgumentList $Alias,$ConnectionBroker,$CollectionName -ScriptBlock {
+                    param($Alias,$CB,$Coll)
                     Import-Module RemoteDesktop
                     Remove-RDRemoteApp -ConnectionBroker $CB -CollectionName $Coll -Alias $Alias -Force
-                } else {
+                    "Removed '$Alias' from collection '$Coll'"
+                }
+            } else {
+                Invoke-Target -ArgumentList $Alias -ScriptBlock {
+                    param($Alias)
                     $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$Alias"
                     if (Test-Path $k) { Remove-Item $k -Recurse -Force; "Removed $k" } else { "Not present: $k" }
                 }
@@ -244,24 +354,30 @@ try {
     if ($ExpectedSha256 -and $ExpectedSha256 -replace '\s','' -ne $localHash) {
         throw "$exeName does not match -ExpectedSha256 (expected $ExpectedSha256, got $localHash)."
     }
-    if ($Mode -eq 'Collection' -and (-not $ConnectionBroker -or -not $CollectionName)) {
-        throw 'Collection mode needs -ConnectionBroker and -CollectionName.'
-    }
     $cmdLine = Build-CommandLine $remoteExe $WrapperArgs $LauncherDebug.IsPresent
 
     # ---------- preflight ----------
     $pre = Invoke-Target -ArgumentList $LauncherPath,$Alias,$Mode -ScriptBlock {
         param($L,$Alias,$Mode)
+        $key = if ($Mode -eq 'Collection') {
+            # The collection's own store; TSAppAllowList is only the broker's mirror of it.
+            $farms = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\CentralPublishedResources\PublishedFarms'
+            @(Get-ChildItem $farms -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.PSPath "Applications\$Alias" } |
+                Where-Object { Test-Path $_ }).Count -gt 0
+        } else {
+            Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$Alias"
+        }
         [pscustomobject]@{
             Launcher = Test-Path $L
             Chrome   = (Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe') -or (Test-Path 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe')
             Edge     = (Test-Path 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe') -or (Test-Path 'C:\Program Files\Microsoft\Edge\Application\msedge.exe')
-            Exists   = Test-Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$Alias"
+            Exists   = $key
         }
     }
     if (-not $pre.Launcher) { throw "OI-SG-RemoteApp-Launcher not found on $ComputerName at '$LauncherPath' (use -LauncherPath)." }
     if (-not ($pre.Chrome -or $pre.Edge)) { Write-Warning "Neither Chrome nor Edge found on $ComputerName." }
-    if ($Mode -eq 'Registry' -and $pre.Exists -and -not $Force) { throw "RemoteApp alias '$Alias' already exists on $ComputerName. Use -Force to overwrite." }
+    if ($pre.Exists -and -not $Force) { throw "RemoteApp alias '$Alias' already exists on $ComputerName. Use -Force to overwrite." }
 
     # ---------- copy + verify ----------
     if ($PSCmdlet.ShouldProcess("${ComputerName}:$remoteExe", 'Copy wrapper')) {
@@ -286,17 +402,39 @@ try {
 
     # ---------- publish ----------
     if ($PSCmdlet.ShouldProcess("$ComputerName/$Alias", "Publish RemoteApp ($Mode)")) {
-        Invoke-Target -ArgumentList $Mode,$Alias,$DisplayName,$LauncherPath,$cmdLine,$IconPath,$ConnectionBroker,$CollectionName -ScriptBlock {
-            param($Mode,$Alias,$Name,$Launcher,$CmdLine,$Icon,$CB,$Coll)
-            if ($Mode -eq 'Collection') {
+        if ($Mode -eq 'Collection') {
+            $created = Invoke-TargetAsSystem -ArgumentList $Alias,$DisplayName,$LauncherPath,$cmdLine,$IconPath,$FallbackIconPath,$ConnectionBroker,$CollectionName,$ShowInWebAccess -ScriptBlock {
+                param($Alias,$Name,$Launcher,$CmdLine,$Icon,$FallbackIcon,$CB,$Coll,$Web)
                 Import-Module RemoteDesktop
-                $p = @{ ConnectionBroker=$CB; CollectionName=$Coll; Alias=$Alias; DisplayName=$Name; FilePath=$Launcher;
-                        CommandLineSetting='Require'; RequiredCommandLine=$CmdLine; ShowInWebAccess=$false }
+                $p = @{ ConnectionBroker=$CB; CollectionName=$Coll; DisplayName=$Name; FilePath=$Launcher;
+                        CommandLineSetting='Require'; RequiredCommandLine=$CmdLine; ShowInWebAccess=$Web }
                 if ($Icon) { $p.IconPath = $Icon; $p.IconIndex = 0 }
                 if (Get-RDRemoteApp -ConnectionBroker $CB -CollectionName $Coll -Alias $Alias -ErrorAction SilentlyContinue) {
-                    $p.Remove('Alias') | Out-Null; Set-RDRemoteApp -Alias $Alias @p
-                } else { New-RDRemoteApp @p | Out-Null }
-            } else {
+                    Set-RDRemoteApp -Alias $Alias @p
+                } else {
+                    try {
+                        # Always pass -Alias: letting RDS generate one yields names like
+                        # "OISGRemoteAppLauncher(1)" that differ from an existing
+                        # "OISGRemoteAppLauncher (1)" only by a space.
+                        New-RDRemoteApp -Alias $Alias @p | Out-Null
+                    } catch {
+                        if (-not $Icon -and $FallbackIcon -and $_.Exception.Message -match 'icon') {
+                            # The launcher exe carries no icon resource; New-RDRemoteApp treats that as fatal.
+                            New-RDRemoteApp -Alias $Alias @p -IconPath $FallbackIcon -IconIndex 0 | Out-Null
+                        } else { throw }
+                    }
+                }
+                Get-RDRemoteApp -ConnectionBroker $CB -CollectionName $Coll -Alias $Alias |
+                    Select-Object -First 1 -Property Alias,DisplayName,RequiredCommandLine
+            }
+            if (-not $created) { throw "Publish reported success but '$Alias' is not in collection '$CollectionName'." }
+            if ($created.Alias -ne $Alias) { throw "Broker stored alias '$($created.Alias)', not the requested '$Alias'." }
+            if ($created.RequiredCommandLine -ne $cmdLine) {
+                throw "Broker stored command line '$($created.RequiredCommandLine)', not '$cmdLine'."
+            }
+        } else {
+            Invoke-Target -ArgumentList $Alias,$DisplayName,$LauncherPath,$cmdLine,$IconPath -ScriptBlock {
+                param($Alias,$Name,$Launcher,$CmdLine,$Icon)
                 $base = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList'
                 # Allow RemoteApps on a non-broker host (same as Publisher / RemoteApp Manager).
                 if (-not (Test-Path $base)) { New-Item $base -Force | Out-Null }
