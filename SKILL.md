@@ -22,6 +22,7 @@ Upstream reference: https://github.com/OneIdentity/SafeguardAutomation (`RDP App
 ```
 wrapper/core/        shared runtime: stdin/flag input, browser launch, step helpers, TOTP
 wrapper/sites/<name>/main.go   one wrapper per site (aws, generic, _template)
+scripts/publish-remoteapp.ps1 copy+verify+register RemoteApp on jump host via WinRM
 scripts/build.sh <site>|all    vet + unit tests + GOOS=windows build -> dist/<site>.exe(+.sha256)
 tests/e2e/run.sh     real Chrome + Xvfb against a mock 3-step login (proves the core works)
 references/          launcher contract, deployment, per-site selector notes
@@ -54,6 +55,13 @@ references/          launcher contract, deployment, per-site selector notes
    the "invalid password" state, which proves every selector before the final submit.
 5. **Deliver**: `dist/<site>.exe` + `.sha256`, the Launcher publishing line, and the SPP
    policy notes from `references/deployment.md`. Commit with git (`git add -A && git commit`).
+6. **Publish (optional, remote)**: `scripts/publish-remoteapp.ps1` copies the exe to the jump
+   host over WinRM, verifies its SHA256, locks down the folder ACL, and registers the Launcher
+   as a RemoteApp (Registry mode = standalone host, Collection mode = RDS Connection Broker).
+   It prints the SPP Application Alias (`||<Alias>`) and Display Name. Run it from a Windows
+   admin box with WinRM to the host; don't try to run it from this container. Example:
+   `./publish-remoteapp.ps1 -ComputerName jumprdp -Wrapper ..\dist\aws.exe -Alias AWSConsole -DisplayName "AWS Console" -WrapperArgs '-set account=123456789012' -Credential (Get-Credential)`
+   Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
 
 ## Launcher contract (summary — full details in references/launcher-contract.md)
 Publish the **Launcher** as the RemoteApp, wrapper as `--cmd`:
@@ -82,6 +90,12 @@ With `--use-stdin` (Launcher ≥ 3.0.1) the Launcher writes one JSON line to std
   user isn't dropped from the session.
 - Push/FIDO/number-matching MFA can't be injected. Stop after password and let the user approve.
 - Windows Defender may flag freshly built Go exes (seen upstream); sign them or add an exclusion.
+- publish-remoteapp.ps1 refuses `-password`/`{password}` and double quotes in -WrapperArgs.
+  Credentials always go via `--use-stdin`. It sets `CommandLineSetting=2`, so only the exact
+  registered command line can run. Registry value names follow standard Windows RemoteApp
+  behaviour; diff them against one app made by the Publisher the first time it's used.
+- pwsh for syntax checks: `/opt/data/tools/bin/pwsh` with `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`
+  (no libicu). Parser-only; remoting can't run from the container.
 - Toolchain on this host: Go at `/opt/data/tools/bin/go` (GOPATH/GOCACHE under
   `/opt/data/tools`), Chrome for Testing at `/opt/data/tools/chrome-linux64/`. Use `Xvfb :97`
   directly because `xvfb-run` fails (no `xauth`).
