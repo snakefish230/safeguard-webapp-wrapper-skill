@@ -5,7 +5,7 @@ Wrapper: `wrapper/sites/azure`. Start URL `https://portal.azure.com` → redirec
 | Page | Selector | Verified |
 |---|---|---|
 | Username | `input[name=loginfmt]` (`#i0116`), Next `#idSIButton9` | 2026-10-16 live probe |
-| Account picker (some tenants) | `#aadTile` (optional) | upstream; absent on safeguardlabs tenant 2026-10-16 |
+| Account picker (some tenants) | `#aadTile` (optional) | upstream; absent on the tenant tested 2026-10-16 |
 | Password | `input[name=passwd]` (`#i0118`), Sign in `#idSIButton9` | 2026-10-16 live probe + wrapper smoke test |
 | TOTP | `#idTxtBx_SAOTCC_OTC` / `input[name=otc]`, `#idSubmit_SAOTCC_Continue` | 2026-10-16, see below |
 | Stay signed in? | No `#idBtn_Back`, Yes `#idSIButton9` | upstream sample |

@@ -4,10 +4,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; T="$(mktemp -d)"; SRV=
 trap '[ -n "$SRV" ] && kill $SRV 2>/dev/null; rm -rf "$T"' EXIT
-export PATH="/opt/data/tools/bin:$PATH"
-# Browser: explicit $CHROME, else the container's Chrome for Testing, else one off PATH.
+[ -n "${GO_BIN_DIR:-}" ] && export PATH="$GO_BIN_DIR:$PATH"
+# Browser: explicit $CHROME, else the first one on PATH.
 if [ -z "${CHROME:-}" ]; then
-  for c in /opt/data/tools/chrome-linux64/chrome google-chrome chromium chromium-browser; do
+  for c in google-chrome chromium chromium-browser; do
     if command -v "$c" >/dev/null 2>&1; then CHROME="$(command -v "$c")"; break; fi
   done
 fi

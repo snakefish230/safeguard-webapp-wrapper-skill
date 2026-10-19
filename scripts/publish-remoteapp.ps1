@@ -38,14 +38,14 @@
 
 .EXAMPLE
     # Credential for the jump host checked out from Safeguard (never shown, never written to disk):
-    ./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Wrapper ../dist/azure.exe -Alias AzurePortal `
-        -DisplayName "Azure Portal" -SafeguardAppliance spp.safeguardlab.net `
-        -SafeguardAsset 10.0.7.103 -SafeguardAccount Administrator -CreateAccessRequest
+    ./publish-remoteapp.ps1 -ComputerName rds-host.example.com -Wrapper ../dist/azure.exe -Alias AzurePortal `
+        -DisplayName "Azure Portal" -SafeguardAppliance spp.example.com `
+        -SafeguardAsset rds-host.example.com -SafeguardAccount Administrator -CreateAccessRequest
 
 .EXAMPLE
     # Status only (no checkout, no publish): is the account requestable, is there an open request?
-    ./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Alias x -SafeguardAppliance spp.safeguardlab.net `
-        -SafeguardAsset 10.0.7.103 -SafeguardAccount Administrator -SafeguardStatusOnly
+    ./publish-remoteapp.ps1 -ComputerName rds-host.example.com -Alias x -SafeguardAppliance spp.example.com `
+        -SafeguardAsset rds-host.example.com -SafeguardAccount Administrator -SafeguardStatusOnly
 
 .EXAMPLE
     ./publish-remoteapp.ps1 -ComputerName jumprdp -Alias AWSConsole -Remove

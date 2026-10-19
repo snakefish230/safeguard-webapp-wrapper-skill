@@ -23,7 +23,7 @@ func (s *steps) Set(v string) error { *s = append(*s, v); return nil }
 
 func main() {
 	url := flag.String("url", "", "start URL")
-	chrome := flag.String("chrome", "/opt/data/tools/chrome-linux64/chrome", "chrome binary")
+	chrome := flag.String("chrome", os.Getenv("CHROME"), "chrome binary; defaults to $CHROME, else whatever chromedp finds on PATH")
 	wait := flag.Duration("wait", 5*time.Second, "settle time after each step")
 	var st steps
 	flag.Var(&st, "step", "type:<css>:<dummy> | click:<css> (repeatable)")
@@ -39,7 +39,8 @@ func main() {
 		fmt.Printf("== %s  %s\n%s\nTEXT: %s\n\n", label, u, d, t)
 	}
 	if err := chromedp.Run(c, chromedp.Navigate(*url)); err != nil {
-		fmt.Println("navigate:", err); os.Exit(1)
+		fmt.Println("navigate:", err)
+		os.Exit(1)
 	}
 	show("start")
 	for i, s := range st {

@@ -43,9 +43,9 @@ published with the Remote Application Publisher name every app after the launche
 
 Credentials from Safeguard instead of `-Credential` (needs `Install-Module safeguard-ps`):
 ```powershell
-./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Wrapper ..\dist\azure.exe -Alias AzurePortal `
-  -DisplayName "Azure Portal" -SafeguardAppliance spp.safeguardlab.net `
-  -SafeguardAsset 10.0.7.103 -SafeguardAccount Administrator -CreateAccessRequest
+./publish-remoteapp.ps1 -ComputerName rds-host.example.com -Wrapper ..\dist\azure.exe -Alias AzurePortal `
+  -DisplayName "Azure Portal" -SafeguardAppliance spp.example.com `
+  -SafeguardAsset rds-host.example.com -SafeguardAccount Administrator -CreateAccessRequest
 ```
 Reuses an open Password request for that account or creates one. It checks the password out
 straight into a PSCredential (never displayed) and checks it in at exit (`-SafeguardKeepRequest`

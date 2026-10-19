@@ -2,3 +2,4 @@ dist/
 *.exe
 *.log
 .venv*/
+__pycache__/

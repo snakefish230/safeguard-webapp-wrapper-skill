@@ -4,7 +4,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/wrapper"
-command -v go >/dev/null || export PATH="/opt/data/tools/bin:$PATH"
+# $GO_BIN_DIR lets you point at a Go toolchain that is not on PATH.
+[ -n "${GO_BIN_DIR:-}" ] && export PATH="$GO_BIN_DIR:$PATH"
+command -v go >/dev/null || { echo "Go >= 1.22 not found on PATH; install it or set GO_BIN_DIR"; exit 1; }
 [ $# -ge 1 ] || { echo "usage: $0 <site>...|all"; ls sites | grep -v '^_'; exit 1; }
 sites=("$@"); [ "$1" = all ] && mapfile -t sites < <(ls sites | grep -v '^_')
 go mod tidy

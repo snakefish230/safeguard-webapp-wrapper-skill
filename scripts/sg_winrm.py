@@ -5,11 +5,13 @@ The password is read straight from the Safeguard API into memory and handed to t
 transport. It is never printed, logged, or written to disk, and the access request is checked
 in again on exit. Nothing here echoes the credential, so it stays out of any transcript.
 
-  python sg_winrm.py --asset 10.0.7.103 --account da-shared1 --account-domain safeguardlab.net \
-      --command 'whoami'
+  python sg_winrm.py --appliance spp.example.com --host rds-host.example.com \
+      --account svc-rdsadmin --account-domain example.com --command 'whoami'
   python sg_winrm.py ... --script local.ps1 --upload file.exe:C:\\dir\\file.exe
 
-Bearer token comes from $SAFEGUARD_TOKEN_FILE or ~/sg-token.txt (see ~/bin/refresh-safeguard-token).
+Needs a cached Safeguard API token; create one with scripts/sg_token.py. On
+Windows prefer scripts/publish-remoteapp.ps1, which authenticates through
+safeguard-ps and needs no token file at all.
 """
 import argparse
 import base64
@@ -22,6 +24,9 @@ import urllib3
 
 import requests
 import winrm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sg_token import load_token  # noqa: E402  (same directory, keeps token handling in one place)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -37,6 +42,12 @@ class Sg:
 
     def _j(self, method, path, **kw):
         r = self.s.request(method, self.base + path, timeout=60, **kw)
+        if r.status_code == 401:
+            raise SystemExit(
+                f"Safeguard rejected the token (HTTP 401 on {method} {path}).\n"
+                f"Tokens are short-lived; refresh it with:\n"
+                f"  scripts/sg_token.py --appliance <appliance> --username <you>"
+            )
         if not r.ok:
             raise SystemExit(f"Safeguard {method} {path} -> HTTP {r.status_code}: {r.text[:300]}")
         return r.json() if r.text.strip() else None
@@ -132,7 +143,8 @@ def smb_put(host, domain, user, password, local, remote_unc_dir, remote_name):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--appliance", default="spp.safeguardlab.net")
+    p.add_argument("--appliance", default=os.environ.get("SAFEGUARD_APPLIANCE", ""),
+                   help="SPP appliance hostname (or $SAFEGUARD_APPLIANCE)")
     p.add_argument("--host", required=True, help="WinRM target (IP or name)")
     p.add_argument("--account", required=True)
     p.add_argument("--account-domain", default="")
@@ -146,13 +158,14 @@ def main():
                    help="NAME=VALUE passed to --script as $env:NAME on the host")
     p.add_argument("--upload", action="append", default=[],
                    help="local:REMOTE_ABS_PATH copied via SMB (repeatable)")
-    p.add_argument("--token-file", default=os.environ.get(
-        "SAFEGUARD_TOKEN_FILE", os.path.expanduser("~/sg-token.txt")))
+    p.add_argument("--token-file", default="",
+                   help="cached bearer token (or $SAFEGUARD_TOKEN_FILE); see sg_token.py")
     a = p.parse_args()
 
-    with open(a.token_file) as f:
-        token = f.read().strip()
+    if not a.appliance:
+        p.error("--appliance is required (or set $SAFEGUARD_APPLIANCE)")
 
+    token = load_token(a.token_file)
     sg = Sg(a.appliance, token)
     system_id, account_id, policy, active = sg.find_account(a.account, a.account_domain, a.host)
     print(f"[sg] account '{a.account}' requestable via policy '{policy}'", file=sys.stderr)

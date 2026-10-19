@@ -127,7 +127,7 @@ End-to-end test: request it in the SPP portal → Launch / Download RDP → brow
 ## Jump host credential policy (for publish-remoteapp.ps1 checkout)
 Only needed when the user can't already request Password access to the RDS admin account.
 ```
-GET  /v4/Assets?filter=NetworkAddress eq '10.0.7.103' or Name eq '<name>'&fields=Id,Name
+GET  /v4/Assets?filter=NetworkAddress eq 'rds-host.example.com' or Name eq '<name>'&fields=Id,Name
 GET  /v4/AssetAccounts?filter=Asset.Id eq <id> and Name eq '<acct>'&fields=Id,Name,HasPassword
 GET  /v4/Me?fields=Id,Name                                    # requester to add as member
 POST /v4/Roles {"Name":"RDS Jump Host Admin","Description":"Checkout for RemoteApp publishing"}

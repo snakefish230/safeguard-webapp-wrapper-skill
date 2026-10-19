@@ -1,7 +1,7 @@
 ---
 name: safeguard-webapp-wrapper
 description: "Use when building a Safeguard RDP-app web wrapper (Go/chromedp .exe) for a site. Generates, tests, builds and documents a Windows exe that the OI-SG-RemoteApp-Launcher runs on the RDS jump host to open a browser and inject Safeguard credentials."
-version: 1.3.0
+version: 1.4.0
 metadata:
   hermes:
     tags: [safeguard, one-identity, pam, rdp-applications, chromedp, go]
@@ -15,18 +15,42 @@ It launches Chrome/Edge, opens the login URL, injects the credential released by
 Safeguard (username/password/TOTP), and stays alive until the browser is closed,
 so the SPS recording covers the whole session.
 
-Project (git-tracked): `/opt/data/sync/projects/safeguard-webapp-wrapper-skill/`
 Upstream reference: https://github.com/OneIdentity/SafeguardAutomation (`RDP Applications/Go chromedp`).
 
 ## Layout
 ```
 wrapper/core/        shared runtime: stdin/flag input, browser launch, step helpers, TOTP
 wrapper/sites/<name>/main.go   one wrapper per site (aws, generic, _template)
-scripts/publish-remoteapp.ps1 copy+verify+register RemoteApp on jump host via WinRM
+scripts/publish-remoteapp.ps1 copy+verify+register RemoteApp on jump host via WinRM (Windows)
+scripts/sg_winrm.py  same job from Linux; needs an API token (see scripts/sg_token.py)
+scripts/sg_token.py  interactive Safeguard login -> cached 0600 bearer token, never printed
 scripts/build.sh <site>|all    vet + unit tests + GOOS=windows build -> dist/<site>.exe(+.sha256)
 tests/e2e/run.sh     real Chrome + Xvfb against a mock 3-step login (proves the core works)
-references/          launcher contract, deployment, scalus-launch, safeguard-config (MCP/API), per-site selectors
+references/          launcher contract, deployment, diagnosing, testing, scalus-launch,
+                     safeguard-config (MCP/API), per-site selectors
 ```
+
+## Which credential path to use
+
+Everything that touches the jump host needs a privileged credential, and it must
+come out of Safeguard rather than out of chat. There are two supported routes and
+one that is always wrong:
+
+| From | Use | Auth |
+|---|---|---|
+| Windows | `scripts/publish-remoteapp.ps1` | `safeguard-ps`, in-process. No token file. **Preferred.** |
+| Linux | `scripts/sg_winrm.py` | Cached API bearer token from `scripts/sg_token.py`. |
+| anywhere | `Safeguard_RetrieveCredential` / `POST .../CheckOutPassword` via MCP | **Never.** The password lands in the model context and the transcript. |
+
+`sg_token.py` prompts for the password with `getpass`, exchanges it through
+`RSTS/oauth2/token` → `v4/Token/LoginResponse`, and writes the result to
+`~/.safeguard/token` with mode 0600. The token is never printed; `--check`
+reports only whether it still works and who it belongs to. Tokens are
+short-lived — `sg_winrm.py` turns a 401 into the exact refresh command rather
+than an opaque API error.
+
+Both publishing scripts check the password out, use it, and check the request
+back in. Neither prints it.
 
 ## Workflow (for "build a wrapper for <site>")
 
@@ -70,21 +94,20 @@ references/          launcher contract, deployment, scalus-launch, safeguard-con
      resubmitting there spends a second attempt and walks the account towards a lockout, so
      `Submit` stays its hand when that error is visible.
 4. **Build & test**: `scripts/build.sh <site>`; run `tests/e2e/run.sh` after any change to
-   `core/`. Optionally smoke-test the site wrapper on Linux against the real login page with
-   dummy creds (build without GOOS, pipe stdin JSON, `DISPLAY` via Xvfb, Chrome at
-   `/opt/data/tools/chrome-linux64/chrome` wrapped with `--no-sandbox`) and confirm it reaches
+   `core/`. If you are fixing a reported bug, write the test first and **confirm it fails
+   without the fix** — and model the site's awkward behaviour, not its polite behaviour. A mock
+   that is kinder than the real site is how this project shipped a broken sign-in with a green
+   suite for days. See `references/testing.md`.
+
+   Optionally smoke-test the site wrapper on Linux against the real login page with
+   dummy creds (build without GOOS, pipe stdin JSON, `DISPLAY` via Xvfb, Chrome wrapped
+   with `--no-sandbox`) and confirm it reaches
    the "invalid password" state, which proves every selector before the final submit.
 5. **Deliver**: `dist/<site>.exe` + `.sha256`, the Launcher publishing line, and the SPP
    policy notes from `references/deployment.md`. Commit with git (`git add -A && git commit`).
 6. **Publish (optional, remote)**: `scripts/publish-remoteapp.ps1` copies the exe to the jump
    host over WinRM, verifies its SHA256, locks down the folder ACL, and registers the Launcher
    as a RemoteApp (Registry mode = standalone host, Collection mode = RDS Connection Broker).
-7. **Check how the user will actually launch it**: a correct policy still fails if the RDP
-   `username` SPP builds exceeds 255 characters — `mstsc` then reports `0x904`
-   "can't connect", which looks like a network fault and is not. The `rdp://` URL used by
-   "Start RDP Session" is ~29 chars longer than the downloaded `.rdp`, so the download can
-   work while the GUI button fails. Keep asset names short for cloud targets with long UPNs.
-   See `references/scalus-launch.md`.
    It prints the SPP Application Alias (`||<Alias>`) and Display Name. Run it from a Windows
    admin box with WinRM to the host. Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
 
@@ -119,8 +142,8 @@ references/          launcher contract, deployment, scalus-launch, safeguard-con
    `safeguard-ps` (password → SecureString → PSCredential). It's never printed and is checked
    in at exit:
    ```powershell
-   ./publish-remoteapp.ps1 -ComputerName 10.0.7.103 -Wrapper ..\dist\azure.exe -Alias AzurePortal `
-     -DisplayName "Azure Portal" -SafeguardAppliance spp.example.com -SafeguardAsset 10.0.7.103 `
+   ./publish-remoteapp.ps1 -ComputerName rds-host.example.com -Wrapper ..\dist\azure.exe -Alias AzurePortal `
+     -DisplayName "Azure Portal" -SafeguardAppliance spp.example.com -SafeguardAsset rds-host.example.com `
      -SafeguardAccount Administrator [-CreateAccessRequest] [-SafeguardAuth Browser|DeviceCode|Certificate]
    ```
    `-SafeguardStatusOnly` prints requestability and the open request as JSON, a quick pre-check
@@ -145,6 +168,20 @@ references/          launcher contract, deployment, scalus-launch, safeguard-con
    get confirmation before running any write. Record the IDs you create so a rollback never
    touches existing objects.
 
+8. **Check how the user will actually launch it.** A correct wrapper and a correct policy can
+   still fail to start. Confirm *both* routes work: the downloaded `.rdp` **and** "Start RDP
+   Session" in the SPP GUI, which goes through SCALUS on the operator's workstation. They do
+   not fail together — the `rdp://` URL is ~29 characters longer than the `.rdp` file, and the
+   RDP protocol caps the username at 255, so the download can work while the GUI button
+   reports `0x904` "can't connect". That error names the network and means nothing of the
+   kind. Keep asset names short for cloud targets with long UPNs.
+   See `references/scalus-launch.md`.
+
+9. **Hand over the diagnostics.** Tell the user where the wrapper's log lives and how to turn
+   on `-debug`, because the first real-world failure will need it and the flag is not where
+   anyone expects (the RDS RemoteApp registration, not the SPP policy). See
+   `references/diagnosing.md`.
+
 ## Launcher contract (summary — full details in references/launcher-contract.md)
 Publish the **Launcher** as the RemoteApp, wrapper as `--cmd`:
 ```
@@ -155,6 +192,12 @@ With `--use-stdin` (Launcher ≥ 3.0.1) the Launcher writes one JSON line to std
 `Target.AccountDomainName`, `Target.TotpCodes`) and `cli_args` (= `--args`). core parses
 `cli_args` as the wrapper's flags. Legacy mode (`--args "-username {username} -password
 {password} ..."`) still works but exposes the password in the process list. Don't use it.
+
+## When something doesn't work
+Get the evidence before forming a theory: the exact error text or a screenshot, then the
+wrapper's `-debug` log. `references/diagnosing.md` has the log locations, how to turn `-debug`
+on (it lives in the RDS RemoteApp registration, not the SPP policy), and a symptom → cause
+table for the failures already seen in the field.
 
 ## Rules / pitfalls
 - **Pin chromedp v0.14.2.** v0.21+ rewrote `Action` as a generic type, so the classic API and
@@ -183,13 +226,13 @@ With `--use-stdin` (Launcher ≥ 3.0.1) the Launcher writes one JSON line to std
   form — check before assuming the host is clean. It sets `CommandLineSetting=2`, so only the exact
   registered command line can run. Registry value names follow standard Windows RemoteApp
   behaviour; diff them against one app made by the Publisher the first time it's used.
-- pwsh for syntax checks: `/opt/data/tools/bin/pwsh` with `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`
-  (no libicu). Parser-only; remoting can't run from the container.
+- pwsh can syntax-check the PowerShell without Windows; on a container without libicu set
+  `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`. Parser-only — remoting needs a real Windows host.
 - Safeguard config: **never** set passwords or TOTP seeds through the MCP or chat. The user
   enters them in the SPP UI; verify with `HasPassword` / `HasTotpAuthenticator`. Call
   `Safeguard_Schema` before the first POST on each appliance, because fields vary by SPP
   version. Entitlement = `/v4/Roles`. RDP-app settings live in
   `SessionProperties.RemoteDesktopApplicationProperties`, and the alias has a `||` prefix.
-- Toolchain on this host: Go at `/opt/data/tools/bin/go` (GOPATH/GOCACHE under
-  `/opt/data/tools`), Chrome for Testing at `/opt/data/tools/chrome-linux64/`. Use `Xvfb :97`
-  directly because `xvfb-run` fails (no `xauth`).
+- Toolchain: Go >= 1.22 and a Chrome/Chromium on `PATH`. If either lives somewhere unusual,
+  set `GO_BIN_DIR` and `CHROME`; the build and e2e scripts both honour them. The e2e scripts
+  use Xvfb when present and fall back to `$DISPLAY`, which flashes a real browser window.
