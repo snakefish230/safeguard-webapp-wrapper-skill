@@ -68,11 +68,12 @@ references/          launcher contract, deployment, scalus-launch, safeguard-con
 6. **Publish (optional, remote)**: `scripts/publish-remoteapp.ps1` copies the exe to the jump
    host over WinRM, verifies its SHA256, locks down the folder ACL, and registers the Launcher
    as a RemoteApp (Registry mode = standalone host, Collection mode = RDS Connection Broker).
-7. **Check how the user will actually launch it**: a correct policy still fails if the client
-   drops the RemoteApp alias. "Start RDP Session" goes through SCALUS, whose stock Linux
-   handler (Remmina) cannot represent a RemoteApp at all, while a downloaded `.rdp` works.
-   If one route works and the other does not, the fault is client-side, not the policy —
-   see `references/scalus-launch.md`.
+7. **Check how the user will actually launch it**: a correct policy still fails if the RDP
+   `username` SPP builds exceeds 255 characters — `mstsc` then reports `0x904`
+   "can't connect", which looks like a network fault and is not. The `rdp://` URL used by
+   "Start RDP Session" is ~29 chars longer than the downloaded `.rdp`, so the download can
+   work while the GUI button fails. Keep asset names short for cloud targets with long UPNs.
+   See `references/scalus-launch.md`.
    It prints the SPP Application Alias (`||<Alias>`) and Display Name. Run it from a Windows
    admin box with WinRM to the host. Supports `-WhatIf`, `-Force` (overwrite), and `-Remove`.
 

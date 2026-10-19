@@ -69,8 +69,12 @@ Values are still never logged — only lengths, and only on mismatch.
 
 ## Launching it
 
-A correct wrapper and policy can still fail to start from the SPP GUI. See
-`references/scalus-launch.md`: SCALUS's stock Linux handler cannot represent a RemoteApp.
+A correct wrapper and policy can still fail to start from the SPP GUI. The Azure asset is
+deliberately named `Azure`, not `Azure portal`: the Entra account is a long UPN
+(`user@tenant.onmicrosoft.com`), and the two together pushed SPP's RDP `username` field to
+257 characters, past the protocol's 255-character limit. `mstsc` then refused with `0x904`
+"can't connect" — which reads as a network fault but is not. Keep this asset's name short.
+See `references/scalus-launch.md`.
 
 SPP setup: asset NetworkAddress = tenant domain (e.g. `contoso.onmicrosoft.com`); account name = UPN
 prefix or full UPN. Push / number-matching MFA cannot be injected; the user approves on their phone.
