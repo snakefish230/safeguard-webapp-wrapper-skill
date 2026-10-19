@@ -26,6 +26,8 @@ const (
 	otpSel  = `#idTxtBx_SAOTCC_OTC, input[name="otc"]`
 	otpBtn  = `#idSubmit_SAOTCC_Continue, #idSIButton9`
 	otpErr  = `#idSpan_SAOTCC_Error_OTC`
+	userErr = `#usernameError, #idSpan_SAOTC_Error`
+	passErr = `#passwordError`
 	kmsiNo  = `#idBtn_Back`
 )
 
@@ -57,16 +59,17 @@ func main() {
 
 	steps := []chromedp.Action{
 		core.Type(userSel, user),
-		core.Click(nextBtn),
+		core.Submit(userSel, nextBtn, userErr, 20*time.Second),
 		// Some tenants show an account-type picker ("Work or school account").
 		// Raced against the password field so tenants without one don't wait.
 		core.ClickIfPresentUnless(`#aadTile, div[data-test-id="aadTile"]`, passSel, 10*time.Second),
 		core.Secret(passSel, pass),
-		core.Click(nextBtn),
-		// #idBtn_Back is "Back" on the password page and "No" on "Stay signed in?".
-		// Wait for the password field to go away so the later optional clicks
-		// can't land on the password page and navigate backwards.
-		core.WaitGone(passSel, 20*time.Second),
+		// Submit confirms the page moved on and falls back to Enter, because a
+		// synthetic click on Entra's animated view sometimes lands nowhere and
+		// the form just waits. Also replaces the old WaitGone: #idBtn_Back is
+		// "Back" on the password page and "No" on "Stay signed in?", so the
+		// later optional clicks must not run while the password page is up.
+		core.Submit(passSel, nextBtn, passErr, 20*time.Second),
 	}
 	if t := in.Get("Target.TotpCodes"); t != "" {
 		steps = append(steps,

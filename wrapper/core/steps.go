@@ -91,6 +91,58 @@ func Enter(sel string) chromedp.Action {
 	return logged("enter "+sel, chromedp.SendKeys(sel, kb.Enter, chromedp.ByQuery))
 }
 
+// Submit clicks btn and confirms the form actually advanced, pressing Enter in
+// field as a fallback when it did not.
+//
+// A synthetic click is delivered at the element's coordinates, so it misses
+// whenever the page moves the button between the hit-test and the dispatch --
+// Entra animates its view transitions, and re-renders when its own validation
+// runs. The click reports success because it was dispatched; the form simply
+// sits there. To the user that looks exactly like the automation waiting for
+// them to press Enter, which is the symptom this fixes. Every login form
+// submits on Enter, so that is the fallback.
+//
+// errSel, when set, names the page's "those credentials were rejected" element.
+// A rejected credential also leaves field on screen, and re-submitting it would
+// burn a second failed attempt and walk the account towards a lockout, so the
+// fallback is suppressed when that error is showing.
+// submitGrace is how long Submit waits for a click to take effect before
+// falling back to Enter.
+const submitGrace = 3 * time.Second
+
+func Submit(field, btn, errSel string, d time.Duration) chromedp.Action {
+	return logged("submit "+field, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(ctx,
+			chromedp.WaitVisible(btn, chromedp.ByQuery),
+			chromedp.Click(btn, chromedp.ByQuery),
+		); err != nil {
+			slog.Debug("submit click failed, will try Enter", "btn", btn, "err", err)
+		}
+		// Short grace, not d/2: a click that registered clears the field in
+		// about a second, so a long wait here is dead time on every sign-in.
+		// The cost of going early is a possible double submit, which the error
+		// probe below rules out for the one case that matters, a rejected
+		// credential.
+		if WentGone(ctx, field, min(submitGrace, d)) {
+			return nil
+		}
+		if errSel != "" {
+			if idx, ok := probeVisible(ctx, []string{errSel}); ok && idx == 0 {
+				slog.Debug("form rejected the value; not resubmitting", "field", field)
+				return nil
+			}
+		}
+		slog.Debug("form did not advance on click, pressing Enter", "field", field)
+		if err := chromedp.Run(ctx, chromedp.SendKeys(field, kb.Enter, chromedp.ByQuery)); err != nil {
+			slog.Debug("enter failed", "field", field, "err", err)
+		}
+		if !WentGone(ctx, field, d) {
+			slog.Debug("form still showing after Enter", "field", field)
+		}
+		return nil
+	}))
+}
+
 // Sleep pauses (use sparingly; prefer waits).
 func Sleep(d time.Duration) chromedp.Action { return chromedp.Sleep(d) }
 

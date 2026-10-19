@@ -67,6 +67,32 @@ now read the field back and, on mismatch, assign through the `value` prototype s
 dispatch `input`/`change` (Entra's sign-in is React, so a plain `e.value =` is ignored).
 Values are still never logged — only lengths, and only on mismatch.
 
+## The click that looks like a missing Enter
+
+Reported after the timing fixes: the password is typed, and then nothing happens until the
+user presses Enter themselves. The step log shows the click on `#idSIButton9` succeeding.
+
+`chromedp.Click` resolves the element, takes its bounding box and dispatches a mouse press at
+that point. Entra re-renders and animates the sign-in form, so between hit-test and dispatch
+the button can move out from under the press. Nothing errors — the event simply lands on
+whatever is now at those coordinates — and the form sits on screen.
+
+`core.Submit` replaces the bare click on both the username and password pages. It clicks,
+waits a short grace (3s) for the field to disappear, and otherwise sends Enter into the field.
+The grace is deliberately short: it is dead time on every sign-in, and a click that did
+register clears the field in about a second.
+
+The guard that matters is `errSel`. A **rejected** password also leaves the field on screen,
+which is indistinguishable from a swallowed click by the field alone. Pressing Enter there
+resubmits a password already known to be wrong, spending a second attempt and walking the
+account towards a lockout. `Submit` probes the error element first and stays its hand when it
+is showing. `tests/e2e/run-azure-otp.sh` asserts the password is submitted exactly once in
+both cases.
+
+The mock reproduces the *symptom* (`?stubborn=1` swallows programmatic clicks) rather than the
+real mechanism, which has not been observed directly — the production build carries no
+`-debug`. If this recurs, get a `-debug` log from a real run before theorising further.
+
 ## Launching it
 
 A correct wrapper and policy can still fail to start from the SPP GUI. The Azure asset is

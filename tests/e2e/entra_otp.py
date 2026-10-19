@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1])
 OUT = sys.argv[2]
-state = {"detour": False, "codes": [], "accepted": False, "user": "", "password": ""}
+state = {"detour": False, "codes": [], "accepted": False, "user": "", "password": "", "submits": 0}
 
 PAGE = """<!doctype html><html><body>
 <div id="v_user"><input name="loginfmt" data-id="i0116">
@@ -22,7 +22,8 @@ PAGE = """<!doctype html><html><body>
 
 <div id="v_pass" hidden><input type="password" name="passwd">
  <button data-id="idBtn_Back" onclick="show('user')">Back</button>
- <button data-id="idSIButton9" onclick="p=val('passwd');show(PUSH?'push':'otp')">Sign in</button></div>
+ <button data-id="idSIButton9" onclick="signin()">Sign in</button>
+ <div id="passwordError" hidden>Your account or password is incorrect.</div></div>
 
 <div id="v_push" hidden><div>Approve a sign in request</div>
  <a data-id="signInAnotherWay" href="#" onclick="detour();show('pick')">I can&#39;t use my app right now</a></div>
@@ -47,6 +48,25 @@ var u="",p="";
 // ?push=1 makes the tenant default to push approval, so the wrapper must take
 // the "sign in another way" detour instead of skipping it.
 var PUSH = location.search.indexOf('push=1') >= 0;
+// ?stubborn=1 makes the Sign in button ignore programmatic clicks, the way a
+// page that re-renders between hit-test and dispatch swallows them. Only a real
+// Enter in the password field gets through, which is the user-reported symptom.
+var STUBBORN = location.search.indexOf('stubborn=1') >= 0;
+// ?badpass=1 rejects the password, so the Enter fallback must NOT fire again.
+var BADPASS = location.search.indexOf('badpass=1') >= 0;
+function signin(ev){
+  if (STUBBORN && !window.__viaEnter) return;   // click swallowed
+  p = val('passwd');
+  fetch('/rec?submits=1');
+  if (BADPASS) { document.getElementById('passwordError').hidden = false; return; }
+  show(PUSH?'push':'otp');
+}
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'Enter') return;
+  var a = document.activeElement;
+  if (!a || a.name !== 'passwd') return;
+  window.__viaEnter = true; signin(); window.__viaEnter = false;
+});
 function val(n){return document.getElementsByName(n)[0].value;}
 // The real page swaps views out of the DOM, so ids like #idSIButton9 and
 // #idBtn_Back are unique at any moment. Only the active view carries its real
@@ -86,7 +106,7 @@ class H(BaseHTTPRequestHandler):
         # Each scenario needs a clean slate: the "reject the first code" rule is
         # counted per run, not per process.
         if self.path.startswith("/reset"):
-            state.update(detour=False, codes=[], accepted=False, user="", password="")
+            state.update(detour=False, codes=[], accepted=False, user="", password="", submits=0)
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -98,6 +118,8 @@ class H(BaseHTTPRequestHandler):
             body = "ok"
             if "detour" in q:
                 state["detour"] = True
+            if "submits" in q:
+                state["submits"] += 1
             if "u" in q:
                 state["user"] = q["u"][0]
                 state["password"] = q.get("p", [""])[0]

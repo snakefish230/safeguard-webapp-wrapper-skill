@@ -49,6 +49,10 @@ assert len(s["codes"])==2 and s["codes"][0]!=s["codes"][1], f"FAIL [{lab}]: code
 assert s["accepted"], f"FAIL [{lab}]: OTP never accepted"
 print(f"PASS [{lab}]: rejected code retried with a different one {s['codes']}")
 assert s["user"]=="alice@contoso.onmicrosoft.com" and s["password"]=="S3cr3t!pa ss"
+# One submission only. A click that silently misses plus an Enter fallback must
+# still send the password exactly once.
+assert s["submits"]==1, f"FAIL [{lab}]: password submitted {s['submits']} times, expected 1"
+print(f"PASS [{lab}]: password submitted exactly once")
 # The mock renders instantly, so anything near a fixed probe timeout is a
 # regression back to waiting on one selector before testing the other.
 assert int(os.environ["ELAPSED"]) < 20, f"FAIL [{lab}]: took {os.environ['ELAPSED']}s; fixed-timeout waiting is back"
@@ -60,7 +64,26 @@ EOF
   echo "PASS [$3]: neither password nor OTP code in log"
 }
 
-run_case ""        false "code page is the default"
-run_case "?push=1" true  "push approval is the default"
+run_case ""                  false "code page is the default"
+run_case "?push=1"           true  "push approval is the default"
+# The reported symptom: the Sign in button swallows the synthetic click, so the
+# form sits there looking like it is waiting for the user to press Enter.
+run_case "?stubborn=1"       false "sign-in button ignores the click"
+run_case "?stubborn=1&push=1" true "button ignores the click, push default"
+
+# A rejected password also leaves the field on screen. The Enter fallback must
+# not fire there, or every failed sign-in costs two attempts and walks the
+# account towards a lockout.
+echo "--- rejected password must not be resubmitted"
+rm -f "$T/state.json"; curl -s "http://127.0.0.1:$PORT/reset" >/dev/null
+NOW=$(date +%s)
+printf '{"username":"alice@contoso.onmicrosoft.com","password":"S3cr3t!pa ss","asset":"127.0.0.1:%s","Target.TotpCodes":[{"Code":"000001","UnixTime":%s,"Period":30}],"cli_args":"-url http://127.0.0.1:%s/?badpass=1 -no-wait -step-timeout 25s"}' \
+  $PORT $((NOW-2)) $PORT | DISPLAY="$TEST_DISPLAY" APPDATA="$T" "$T/azure" >"$T/bad.txt" 2>&1 || true
+python3 - "$T/state.json" <<'EOF'
+import json,sys
+s=json.load(open(sys.argv[1]))
+assert s["submits"]==1, f"FAIL: rejected password submitted {s['submits']} times, expected 1"
+print("PASS: rejected password submitted exactly once (no lockout risk)")
+EOF
 [ -n "${XV:-}" ] && kill $XV 2>/dev/null || true
 echo "ALL PASS"
