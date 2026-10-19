@@ -110,7 +110,74 @@ func Enter(sel string) chromedp.Action {
 // falling back to Enter.
 const submitGrace = 3 * time.Second
 
-func Submit(field, btn, errSel string, d time.Duration) chromedp.Action {
+// submitted reports whether a login form has moved on. It deliberately does not
+// ask "is the field gone", because that answer is wrong on Entra: the password
+// page leaves input[name="loginfmt"] in the DOM and visible, so a
+// disappearance test reports failure on every single step. It asks the positive
+// question instead — has the thing we are heading for appeared, or has the form
+// rejected us — and only falls back to the field's own absence.
+//
+// The selectors are probed in priority order, so next winning over field
+// matters: both are on screen at once during the overlap.
+func submitted(ctx context.Context, field, next, errSel string) (done bool, rejected bool) {
+	var sels []string
+	if next != "" {
+		sels = append(sels, next)
+	}
+	errIdx := -1
+	if errSel != "" {
+		errIdx = len(sels)
+		sels = append(sels, errSel)
+	}
+	fieldIdx := len(sels)
+	sels = append(sels, field)
+
+	idx, ok := probeVisible(ctx, sels)
+	if !ok {
+		// The page could not be queried, which happens mid-navigation. That is
+		// not evidence either way, so keep waiting.
+		return false, false
+	}
+	if idx == fieldIdx {
+		return false, false
+	}
+	return true, idx == errIdx
+}
+
+// awaitSubmit polls submitted until the form moves on or d expires.
+func awaitSubmit(ctx context.Context, field, next, errSel string, d time.Duration) (done bool, rejected bool) {
+	deadline := time.Now().Add(d)
+	for {
+		if done, rejected := submitted(ctx, field, next, errSel); done {
+			return true, rejected
+		}
+		if time.Now().After(deadline) {
+			return false, false
+		}
+		select {
+		case <-ctx.Done():
+			return false, false
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
+
+// Submit advances a login form and confirms it actually advanced.
+//
+// chromedp.Click dispatches at the element's coordinates, so it can be lost
+// when the page re-renders between hit-test and dispatch: the click reports
+// success and the form just sits there, looking to the user exactly like it is
+// waiting for them to press Enter. Submit therefore clicks, waits a short grace
+// for the form to move on, and otherwise sends Enter into the field itself.
+//
+// next is the selector we expect on the other side. Pass it whenever one
+// exists; without it Submit can only fall back to the field's own absence,
+// which several identity providers never deliver.
+//
+// errSel guards against lockouts: a rejected credential also leaves the field
+// on screen, and pressing Enter there resubmits a value already known to be
+// wrong, spending a second attempt.
+func Submit(field, btn, next, errSel string, d time.Duration) chromedp.Action {
 	return logged("submit "+field, chromedp.ActionFunc(func(ctx context.Context) error {
 		if err := chromedp.Run(ctx,
 			chromedp.WaitVisible(btn, chromedp.ByQuery),
@@ -118,26 +185,24 @@ func Submit(field, btn, errSel string, d time.Duration) chromedp.Action {
 		); err != nil {
 			slog.Debug("submit click failed, will try Enter", "btn", btn, "err", err)
 		}
-		// Short grace, not d/2: a click that registered clears the field in
-		// about a second, so a long wait here is dead time on every sign-in.
-		// The cost of going early is a possible double submit, which the error
-		// probe below rules out for the one case that matters, a rejected
-		// credential.
-		if WentGone(ctx, field, min(submitGrace, d)) {
+		// Short grace, not d: this is dead time on every sign-in, and a click
+		// that registered moves the form on in about a second.
+		done, rejected := awaitSubmit(ctx, field, next, errSel, min(submitGrace, d))
+		if rejected {
+			slog.Debug("form rejected the value; not resubmitting", "field", field)
 			return nil
 		}
-		if errSel != "" {
-			if idx, ok := probeVisible(ctx, []string{errSel}); ok && idx == 0 {
-				slog.Debug("form rejected the value; not resubmitting", "field", field)
-				return nil
-			}
+		if done {
+			return nil
 		}
 		slog.Debug("form did not advance on click, pressing Enter", "field", field)
 		if err := chromedp.Run(ctx, chromedp.SendKeys(field, kb.Enter, chromedp.ByQuery)); err != nil {
 			slog.Debug("enter failed", "field", field, "err", err)
 		}
-		if !WentGone(ctx, field, d) {
-			slog.Debug("form still showing after Enter", "field", field)
+		if done, rejected := awaitSubmit(ctx, field, next, errSel, d); !done {
+			slog.Debug("form never advanced", "field", field, "next", next)
+		} else if rejected {
+			slog.Debug("form rejected the value", "field", field)
 		}
 		return nil
 	}))
@@ -193,12 +258,36 @@ func ClickIfPresent(sel string, d time.Duration) chromedp.Action {
 	})
 }
 
+// visibleIdxJS asks whether an element is really on screen and reachable, not
+// merely present with a non-zero box. Entra parks the view you came from
+// instead of removing it, so input[name="loginfmt"] still has a box while the
+// password page is up (measured 2026-10-19). A naive test calls that visible
+// and every "has the form moved on" check reports a false negative.
+//
+// An element counts only if it is inside the viewport, not inside an
+// aria-hidden subtree, and is what a click at its centre would actually reach.
+// That last test is what rules out a parked view: it is either scrolled away,
+// covered by the live view, or inert, and in all three cases elementFromPoint
+// returns something else.
 const visibleIdxJS = `(function(sels){
-for (var i=0;i<sels.length;i++){
-  var e=document.querySelector(sels[i]);
-  if(!e) continue;
+function vis(e){
   var r=e.getBoundingClientRect();
-  if(r.width>0&&r.height>0&&getComputedStyle(e).visibility!=='hidden') return i;
+  if(r.width<=0||r.height<=0) return false;
+  var st=getComputedStyle(e);
+  if(st.visibility==='hidden'||st.display==='none'||st.opacity==='0') return false;
+  if(e.closest('[aria-hidden="true"]')) return false;
+  var cx=r.left+r.width/2, cy=r.top+r.height/2;
+  if(cx<0||cy<0||cx>window.innerWidth||cy>window.innerHeight) return false;
+  var top=document.elementFromPoint(cx,cy);
+  return !!top&&(top===e||e.contains(top));
+}
+for (var i=0;i<sels.length;i++){
+  // querySelectorAll, not querySelector: these are comma-joined selector
+  // groups and the first element in document order is routinely a hidden copy
+  // on a view that has not been reached yet. Testing only that one reports the
+  // whole group as absent while a perfectly visible match sits further down.
+  var els=document.querySelectorAll(sels[i]);
+  for (var j=0;j<els.length;j++){ if(vis(els[j])) return i; }
 }
 return -1;})(%s)`
 
@@ -294,7 +383,7 @@ func FirstVisible(branches map[string]chromedp.Action) chromedp.Action {
 // Target.TotpCodes is a snapshot taken at launch, so a rejected code is retried
 // with a different one from that snapshot (typically the next period's) rather
 // than by regenerating.
-func TOTPSubmit(sel, btn, errSel, totpJSON string, minValid, attempts int) chromedp.Action {
+func TOTPSubmit(sel, btn, okSel, errSel, totpJSON string, minValid, attempts int) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		if err := chromedp.Run(ctx, chromedp.WaitVisible(sel, chromedp.ByQuery)); err != nil {
 			return fmt.Errorf("OTP field %q never appeared: %w", sel, err)
@@ -323,7 +412,7 @@ func TOTPSubmit(sel, btn, errSel, totpJSON string, minValid, attempts int) chrom
 			if err := chromedp.Run(ctx, Click(btn)); err != nil {
 				return err
 			}
-			if accepted, why := otpOutcome(ctx, sel, watchErr, 20*time.Second); accepted {
+			if accepted, why := otpOutcome(ctx, sel, okSel, watchErr, 20*time.Second); accepted {
 				slog.Debug("otp accepted", "n", i)
 				return nil
 			} else {
@@ -334,9 +423,15 @@ func TOTPSubmit(sel, btn, errSel, totpJSON string, minValid, attempts int) chrom
 	})
 }
 
-// otpOutcome waits for an OTP submission to resolve: the field going away means
-// the code was taken, errSel appearing means it was refused.
-func otpOutcome(ctx context.Context, sel, errSel string, d time.Duration) (accepted bool, why string) {
+// otpOutcome waits for an OTP submission to resolve: okSel appearing or the
+// field going away means the code was taken, errSel appearing means it was
+// refused.
+//
+// okSel is the positive signal and is preferred over the field's absence for
+// the same reason Submit needs one — a provider that parks the page it came
+// from never delivers the absence, and the submission then reads as a
+// rejection even though it succeeded.
+func otpOutcome(ctx context.Context, sel, okSel, errSel string, d time.Duration) (accepted bool, why string) {
 	// The error must be probed before the field. A refused code leaves the
 	// field on screen, so checking the field first would match every time and
 	// hide the error.
@@ -345,6 +440,11 @@ func otpOutcome(ctx context.Context, sel, errSel string, d time.Duration) (accep
 	if errSel != "" {
 		sels = append(sels, errSel)
 		errIdx = 0
+	}
+	okIdx := -1
+	if okSel != "" {
+		okIdx = len(sels)
+		sels = append(sels, okSel)
 	}
 	sels = append(sels, sel)
 
@@ -357,6 +457,8 @@ func otpOutcome(ctx context.Context, sel, errSel string, d time.Duration) (accep
 				return true, "field gone"
 			case idx == errIdx:
 				return false, "site reported an invalid code"
+			case idx == okIdx:
+				return true, "next page shown"
 			}
 		}
 		select {

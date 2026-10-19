@@ -39,7 +39,8 @@ PAGE = """<!doctype html><html><body>
  <button data-id="idSubmit_SAOTCC_Continue" onclick="verify()">Verify</button>
  <div id="idSpan_SAOTCC_Error_OTC" hidden>The code you entered isn&#39;t valid.</div></div>
 
-<div id="v_kmsi" hidden><button data-id="idBtn_Back" onclick="show('done')">No</button>
+<div id="v_kmsi" hidden><input type="checkbox" id="KmsiCheckboxField">
+ <button data-id="idBtn_Back" onclick="show('done')">No</button>
  <button data-id="idSIButton9" onclick="show('done')">Yes</button></div>
 
 <div id="v_done" hidden><h1 id="welcome">Portal</h1></div>
@@ -68,13 +69,23 @@ document.addEventListener('keydown', function(e){
   window.__viaEnter = true; signin(); window.__viaEnter = false;
 });
 function val(n){return document.getElementsByName(n)[0].value;}
-// The real page swaps views out of the DOM, so ids like #idSIButton9 and
-// #idBtn_Back are unique at any moment. Only the active view carries its real
-// id here; the rest are parked under a suffix.
+// Real Entra parks the view you came from instead of removing it: its ids are
+// released (so #idSIButton9 and #idBtn_Back stay unique) but its *inputs* keep
+// matching by name and keep reporting a visible box. Measured 2026-10-19:
+// input[name="loginfmt"] is still visible while the password field is on
+// screen. Hiding the old view here would make the mock kinder than the real
+// site and would let a "wait for the field to disappear" submit pass.
+var PREV = 'user';   // the view we are leaving, which stays on screen parked
 function show(v){
   ['user','pass','push','pick','otp','kmsi','done'].forEach(function(n){
-    document.getElementById('v_'+n).hidden = (n!==v);
+    document.getElementById('v_'+n).hidden = (n!==v && n!==PREV);
   });
+  // The parked view is left fully on screen and interactive on purpose. That
+  // is the worst case and it is what was actually measured: the old probe
+  // called loginfmt visible while the password page was up. Parking it with
+  // pointer-events:none or aria-hidden would let a "wait for the field to go"
+  // submit pass here and still hang against the real site.
+  PREV = v;
   document.querySelectorAll('[data-id]').forEach(function(el){
     el.id = el.dataset.id + '_parked';
   });

@@ -67,31 +67,68 @@ now read the field back and, on mismatch, assign through the `value` prototype s
 dispatch `input`/`change` (Entra's sign-in is React, so a plain `e.value =` is ignored).
 Values are still never logged — only lengths, and only on mismatch.
 
-## The click that looks like a missing Enter
+## The step that never looked finished
 
-Reported after the timing fixes: the password is typed, and then nothing happens until the
-user presses Enter themselves. The step log shows the click on `#idSIButton9` succeeding.
+Reported as: the password is typed, then nothing happens until the user presses Enter.
 
-`chromedp.Click` resolves the element, takes its bounding box and dispatches a mouse press at
-that point. Entra re-renders and animates the sign-in form, so between hit-test and dispatch
-the button can move out from under the press. Nothing errors — the event simply lands on
-whatever is now at those coordinates — and the form sits on screen.
+My first explanation was that `chromedp.Click` dispatches at the element's coordinates and so
+gets lost when Entra re-renders. That was a guess, and it was wrong. A `-debug` log from a
+real run settled it in four lines:
 
-`core.Submit` replaces the bare click on both the username and password pages. It clicks,
-waits a short grace (3s) for the field to disappear, and otherwise sends Enter into the field.
-The grace is deliberately short: it is dead time on every sign-in, and a click that did
-register clears the field in about a second.
+```
+15:42:40 "form did not advance on click, pressing Enter"  field=loginfmt
+15:43:00 "form still showing after Enter"                 field=loginfmt
+15:43:00 "already on target page, skipping optional click" skip=passwd
+15:43:00 secret input[name="passwd"] -> ok in 73ms
+```
 
-The guard that matters is `errSel`. A **rejected** password also leaves the field on screen,
-which is indistinguishable from a swallowed click by the field alone. Pressing Enter there
-resubmits a password already known to be wrong, spending a second attempt and walking the
-account towards a lockout. `Submit` probes the error element first and stays its hand when it
-is showing. `tests/e2e/run-azure-otp.sh` asserts the password is submitted exactly once in
-both cases.
+The page **had** advanced — the password field was right there. **Entra parks the view you
+came from instead of removing it, so `input[name="loginfmt"]` is still in the DOM and still
+reports a visible box while the password page is up.** Every check of the form "has the field
+gone" therefore answered *no*, on every step, forever.
 
-The mock reproduces the *symptom* (`?stubborn=1` swallows programmatic clicks) rather than the
-real mechanism, which has not been observed directly — the production build carries no
-`-debug`. If this recurs, get a `-debug` log from a real run before theorising further.
+The cost was not just a spurious Enter. Each step burned its full fallback budget, roughly 23s
+twice over, and SPP mints the TOTP codes at session start with 30s lives. By the time the
+wrapper reached the code box every code was dead:
+
+```
+15:33:01 step failed step=8 err="no unused TOTP code valid for >= 10s"   (after 2m35s)
+```
+
+So "the OTP is wrong" and "it waits for Enter" were the same fault.
+
+### What replaced it
+
+Absence is not a usable success signal — ask the positive question instead. `core.Submit` takes
+a `next` selector naming what we expect on the other side, and `TOTPSubmit`/`otpOutcome` take
+`okSel`. Each lists every page that step can legitimately land on, so no branch pays a timeout:
+
+| step | positive signal |
+|---|---|
+| username | password field, or the account-type tile |
+| password | OTP box, "sign in another way", the method picker, or "Stay signed in?" |
+| OTP | "Stay signed in?" (`#KmsiCheckboxField`) |
+
+`errSel` still suppresses the Enter fallback, so a rejected credential is never resubmitted
+into a lockout.
+
+Two supporting fixes in `probeVisible`, both found by this bug:
+
+- **Visibility now means reachable**, not merely "has a box": inside the viewport, not under
+  `aria-hidden`, and the element `elementFromPoint` actually returns at its own centre. A
+  parked view fails all three.
+- **`querySelectorAll`, not `querySelector`.** These are comma-joined groups, and the first
+  element in document order is routinely a hidden copy on a view not yet reached — the hidden
+  `#signInAnotherWay` in the push view masked the visible OTP box. Testing only the first match
+  reported the whole group absent. This one cost a wrong fix before it was spotted.
+
+### Testing it
+
+`tests/e2e/entra_otp.py` used to hide the previous view, which made the mock kinder than the
+real site and let the broken "wait for it to disappear" logic pass. It now leaves the parked
+view **fully visible and interactive** — the worst case, and the one actually measured. Drop
+the `next` selectors and the suite fails in 54s with the real symptom; with them it passes in
+4s.
 
 ## Launching it
 

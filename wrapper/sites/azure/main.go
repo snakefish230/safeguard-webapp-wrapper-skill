@@ -29,6 +29,17 @@ const (
 	userErr = `#usernameError, #idSpan_SAOTC_Error`
 	passErr = `#passwordError`
 	kmsiNo  = `#idBtn_Back`
+
+	// What each submit is heading for. Entra leaves the field we just filled in
+	// the DOM and visible on the next page, so "did the field disappear" is
+	// useless as a success test and these positive signals are what Submit
+	// actually waits on. Each lists every page that step can legitimately land
+	// on, so no branch pays a timeout.
+	userNext = passSel + `, #aadTile, div[data-test-id="aadTile"]`
+	passNext = otpSel + `, #signInAnotherWay, div[data-value="PhoneAppOTP"], ` + kmsiSel
+	// "Stay signed in?" is the page a taken OTP lands on, so it is the positive
+	// proof the code was accepted.
+	kmsiSel = `#KmsiCheckboxField`
 )
 
 func main() {
@@ -59,17 +70,16 @@ func main() {
 
 	steps := []chromedp.Action{
 		core.Type(userSel, user),
-		core.Submit(userSel, nextBtn, userErr, 20*time.Second),
+		core.Submit(userSel, nextBtn, userNext, userErr, 20*time.Second),
 		// Some tenants show an account-type picker ("Work or school account").
 		// Raced against the password field so tenants without one don't wait.
 		core.ClickIfPresentUnless(`#aadTile, div[data-test-id="aadTile"]`, passSel, 10*time.Second),
 		core.Secret(passSel, pass),
-		// Submit confirms the page moved on and falls back to Enter, because a
-		// synthetic click on Entra's animated view sometimes lands nowhere and
-		// the form just waits. Also replaces the old WaitGone: #idBtn_Back is
-		// "Back" on the password page and "No" on "Stay signed in?", so the
-		// later optional clicks must not run while the password page is up.
-		core.Submit(passSel, nextBtn, passErr, 20*time.Second),
+		// Submit confirms the page moved on and falls back to Enter. It also
+		// replaces the old WaitGone: #idBtn_Back is "Back" on the password page
+		// and "No" on "Stay signed in?", so the later optional clicks must not
+		// run while the password page is still up.
+		core.Submit(passSel, nextBtn, passNext, passErr, 20*time.Second),
 	}
 	if t := in.Get("Target.TotpCodes"); t != "" {
 		steps = append(steps,
@@ -78,7 +88,7 @@ func main() {
 			// Both are raced, so neither path waits on a fixed timeout.
 			core.ClickIfPresentUnless(`#signInAnotherWay`, otpSel, 20*time.Second),
 			core.ClickIfPresentUnless(`div[data-value="PhoneAppOTP"]`, otpSel, 10*time.Second),
-			core.TOTPSubmit(otpSel, otpBtn, otpErr, t, *totpMin, *totpTries),
+			core.TOTPSubmit(otpSel, otpBtn, kmsiSel, otpErr, t, *totpMin, *totpTries),
 		)
 	}
 	if *staySignedIn {

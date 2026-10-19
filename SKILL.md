@@ -44,11 +44,11 @@ references/          launcher contract, deployment, scalus-launch, safeguard-con
 3. **Generate the site**: copy `wrapper/sites/_template/` → `wrapper/sites/<site>/`, remove the
    `//go:build ignore` line, fill in URL + steps using core helpers:
    `Type`, `Secret` (not logged), `Click`, `Enter`,
-   `Submit(field, btn, errSel, d)` to advance a login form (prefer it over bare `Click` —
-   see the third MFA rule below), `ClickIfPresent(sel, d)` for optional
+   `Submit(field, btn, next, errSel, d)` to advance a login form (prefer it over bare `Click`
+   — see the third MFA rule below), `ClickIfPresent(sel, d)` for optional
    prompts, `ClickIfPresentUnless(sel, skip, skipWait, d)` when that optional control also
    exists on the page you are heading for, `FirstVisible(map[sel]action)` for branching forms,
-   `TOTPSubmit(sel, btn, json, minValid, attempts)`,
+   `TOTPSubmit(sel, btn, okSel, json, minValid, attempts)`,
    `WaitVisible`, `WaitURLContains`. Site-specific non-secret options become flags
    (`fs.String/Bool`), read after `core.Load`. If the site fits a plain form, just emit a
    `generic.exe` command line instead of new code.
@@ -60,14 +60,15 @@ references/          launcher contract, deployment, scalus-launch, safeguard-con
    - **A "use another method" link is often on the code page as well.** Clicking it
      unconditionally detours through the method picker and back. Gate it on the OTP field not
      already being present.
-   - **A click on a sign-in button is not a reliable submit.** `chromedp.Click` dispatches at
-     the element's coordinates, so it is lost whenever the page re-renders or animates between
-     hit-test and dispatch. The click reports success and the form just sits there, looking to
-     the user exactly like it is waiting for them to press Enter. `Submit` clicks, waits a
-     short grace for the field to go, then sends Enter into the field itself. Pass `errSel`:
-     a *rejected* credential also leaves the field on screen, and resubmitting there spends a
-     second attempt and walks the account towards a lockout, so `Submit` stays its hand when
-     that error is visible.
+   - **Never treat a field disappearing as proof a step worked.** Entra parks the view you
+     came from, so the username box is still in the DOM and still reports a visible box on the
+     password page. Every "has it gone yet" check then answers no forever: each step burns its
+     full timeout, and since SPP mints TOTP codes at session start with 30s lives, the codes
+     are all dead by the time you reach the box. Always wait for a *positive* signal — pass
+     `next` to `Submit` and `okSel` to `TOTPSubmit`, naming every page that step can legitimately
+     land on. Pass `errSel` too: a *rejected* credential also leaves the field on screen, and
+     resubmitting there spends a second attempt and walks the account towards a lockout, so
+     `Submit` stays its hand when that error is visible.
 4. **Build & test**: `scripts/build.sh <site>`; run `tests/e2e/run.sh` after any change to
    `core/`. Optionally smoke-test the site wrapper on Linux against the real login page with
    dummy creds (build without GOOS, pipe stdin JSON, `DISPLAY` via Xvfb, Chrome at
