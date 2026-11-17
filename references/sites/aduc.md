@@ -30,3 +30,9 @@ and `-debug` (also keeps the console window visible).
   "access denied" / "domain could not be found", not as a wrapper error.
 - `whoami` inside the session shows the RDS user. That's expected. Check the DC security log
   (4624/4769) for the vaulted account.
+
+## SPP policy (verified on pcaob-poc, policy Id 9)
+Type RemoteDesktopApplication, alias `||ADUC`, app host = Apps (10.0.0.7) logging in as the RDS
+service account. Scope = **DC asset only**, `SessionAccessAccountType=PolicySpecific`,
+`SessionAccessAccounts=[SGPOV-admin2]`. An AD account added as an Account scope item gives
+requesters nothing; see safeguard-config.md Step 4.

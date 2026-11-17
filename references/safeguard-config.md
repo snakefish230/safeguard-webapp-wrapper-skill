@@ -109,6 +109,15 @@ POST /v4/AccessPolicies/{policyId}/ScopeItems/Add
 - `SessionAccessAccountType` controls the account used for the RDP login to the jump host.
   `None` uses the policy's ApplicationHostAccount. `LinkedAccount` uses the requester's
   linked account, and `UserSupplied` prompts the requester.
+- **Directory (AD) target accounts are different.** A domain account in the policy as an
+  `Account` scope item produces *no* entitlement, so requesters see nothing. A directory asset
+  has no network address and can't be a session target. Mirror the working RDP policies:
+  scope = a real asset with an address (e.g. the DC), with `"SessionAccessAccountType":
+  "PolicySpecific"` and `"SessionAccessAccounts":[{"Id":<dirAccountId>}]`. The entitlement then
+  shows as `AccountRequestType: DirectorySession`. Don't put the jump host's own login account
+  in scope. Seen 2026-11-17 (ADUC on pcaob-poc).
+- Verify as admin without logging in as the requester:
+  `GET /v4/Reports/Entitlements/UserEntitlements?userIds=<id>`. A new policy must appear there.
 - `ApplicationProgram` / `ApplicationCmdLine` aren't needed when the Launcher is published
   with a required command line; leave them unset unless the appliance version requires them.
 - Approvals: if wanted, set `"RequireApproval": true` and add `ApproverSets`
