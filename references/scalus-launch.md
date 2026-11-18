@@ -179,3 +179,13 @@ busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/
   org.freedesktop.impl.portal.PermissionStore SetPermission sbssas desktop-used-apps true x-scheme-handler/rdp "" 2 scalus 3
 ```
 Check whether the click reached SCALUS: a launch writes a `Parsing URL` line to `~/.SCALUS/scalus.log`.
+
+## HiDPI: session text too small
+
+FreeRDP ignores the compositor's scale, so on a 2×–2.5× laptop panel everything looks tiny.
+Put extra options in `~/.SCALUS/sg-freerdp.conf`, one per line; `sg-freerdp.sh` appends them:
+```
+/scale:180          # 100|140|180
+/scale-desktop:200  # Windows DPI %, any value
+```
+Monitors with different scales can't share one value; tune for the screen you use most.

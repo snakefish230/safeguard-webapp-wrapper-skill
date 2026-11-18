@@ -21,6 +21,17 @@ name="${4:-}"
 [ -n "$host" ] && [ -n "$user" ] || { echo "usage: $0 HOST USER [REMOTEAPP_PROGRAM] [REMOTEAPP_NAME]" >&2; exit 2; }
 
 args=(/v:"$host" /u:"$user" /p:Safeguard /cert:ignore +clipboard /dynamic-resolution)
+
+# Per-workstation extras (e.g. HiDPI scaling), one FreeRDP option per line:
+#   /scale:180
+#   /scale-desktop:200
+conf="${SG_FREERDP_CONF:-$HOME/.SCALUS/sg-freerdp.conf}"
+if [ -r "$conf" ]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] && args+=("$line")
+  done < "$conf"
+fi
 if [ -n "$program" ]; then
   if [ -n "$name" ]; then
     args+=(/app:program:"$program",name:"$name")
