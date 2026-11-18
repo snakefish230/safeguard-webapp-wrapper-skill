@@ -10,7 +10,7 @@ waits for MMC to exit, then exits itself.
 
 ## Launcher line
 ```
---use-stdin --cmd "C:\OneIdentity\aduc.exe" --args ""
+--use-stdin --cmd "C:\OneIdentity\aduc.exe" --args "-set logon_domain=ONEIDENTITYLAB"
 ```
 Optional `--args`: `-server {asset}` (pin a DC), `-domain corp.example.com`,
 `-msc dssite.msc|domain.msc|gpmc.msc|<path>` (other consoles), `-set logon_domain=CORP`,
@@ -36,3 +36,6 @@ Type RemoteDesktopApplication, alias `||ADUC`, app host = Apps (10.0.0.7) loggin
 service account. Scope = **DC asset only**, `SessionAccessAccountType=PolicySpecific`,
 `SessionAccessAccounts=[SGPOV-admin2]`. An AD account added as an Account scope item gives
 requesters nothing; see safeguard-config.md Step 4.
+- Working registration on RA (2026-11-18): FilePath
+  `C:\Program Files\OneIdentity\RemoteApp Launcher\OI-SG-RemoteApp-Launcher.exe`. The stray
+  copy in `C:\OneIdentity\RemoteApp Launcher\` passed nothing to the wrapper.

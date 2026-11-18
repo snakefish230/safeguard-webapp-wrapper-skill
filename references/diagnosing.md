@@ -112,6 +112,7 @@ whichever machine the operator clicked from.
 | `no unused TOTP code valid for >= 10s` | wrapper log | The flow took longer than the codes live. SPP mints them at session start with ~30s lives, so anything over about 90s total exhausts them. Find the step that is waiting, do not raise the retry count. |
 | Form sits until the user presses Enter | reported by the user | A success check that waits for the field to *disappear*. Providers that park the previous view never deliver that. Wait for a positive signal instead. |
 | `context canceled` on every step from a point onward | wrapper log | The browser was closed — usually the user giving up. Look at what stalled immediately before, not at the cancelled steps. |
+| `starting ... keys=[]` then `required value "username" was not provided`, and no new line in `oi_sg_rci_*.log` for that time | wrapper log + Launcher log on the RDS host, in the **RemoteApp login account's** profile (not the operator's PC) | The Launcher never passed anything on. The registration looked right (`--use-stdin`, Setting=2), but `FilePath` pointed at a second, stray Launcher copy. Use the same Launcher path as an app proven to work on that host. Hosts often carry several copies, so check `FilePath` on every entry. Seen 2026-11-17 on pcaob-poc (ADUC). |
 | Step log shows a click succeeding but nothing happening | wrapper log with `-debug` | Either a genuinely lost click, or — far more likely — a wrong success check. Rule out the check first; it costs nothing. |
 
 ## Method
