@@ -57,6 +57,20 @@ for l in sys.stdin:
 Anything at 256 or above fails; working entries sit well below. Comparing a working app
 against a failing one on the same appliance isolates it immediately.
 
+### Linux FreeRDP/Remmina: a tighter limit of 222
+
+FreeRDP (and so Remmina) also puts the whole username into the X.224 Connection Request
+cookie, `Cookie: mstshash=<username>\r\n`. That packet's length field is one byte, so the
+cookie overflows at **222 characters**, well before the 255 limit above:
+`6 + 17 + len(username) + 2 + 8 <= 255`. FreeRDP then logs
+`tpdu invalid length, got 257, maximum supported is 255` followed by
+`ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED`. Remmina shows *"Unable to establish a connection to
+the RDP server … Check 'Security protocol negotiation'"*, which points at TLS/NLA and is
+wrong. `mstsc` truncates the cookie, so the same `.rdp` works from Windows. Remmina writes
+these lines to the user journal (`journalctl --user | grep -i freerdp`).
+Seen 2026-11-18: Azure username 224 (fails) and ADUC 192 (works) on the same appliance.
+Fix it the same way: shorten the asset name.
+
 ### Shortening the username
 
 Only some components are yours to control. In order of least disruption:
