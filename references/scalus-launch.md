@@ -153,3 +153,17 @@ SCALUS log also records the template used, the signing step and the final comman
 Confirm the log is actually recording your attempts before drawing conclusions from it. A
 stale log, or one from a different machine than the user is testing on, will happily
 support a wrong theory.
+
+## Remmina says "The file 'rdp:alternate+shell=s:…' is corrupted" (seen 2026-11-18)
+
+That message means Remmina opened the `rdp://` URL directly, so SCALUS never ran.
+SCALUS 1.1.0.470 `register` runs `xdg-mime default scalus.desktop x-scheme-handler.rdp`,
+with a dot instead of a slash. That writes a bad `x-scheme-handler.rdp=` line to
+`~/.config/mimeapps.list` and leaves `org.remmina.Remmina-file.desktop` as the real
+handler. To fix it:
+- Change that line to `x-scheme-handler/rdp=scalus.desktop`.
+- Check that `xdg-settings get default-url-scheme-handler rdp` prints `scalus.desktop`.
+- In `~/.SCALUS/SCALUS.json`, map the rdp protocol to `safeguard-freerdp`.
+
+Re-running `scalus register` (or editing it in the SCALUS UI) can reset both.
+`scalus launch -p -u '<url>'` previews which handler runs without connecting.
