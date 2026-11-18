@@ -167,3 +167,15 @@ handler. To fix it:
 
 Re-running `scalus register` (or editing it in the SCALUS UI) can reset both.
 `scalus launch -p -u '<url>'` previews which handler runs without connecting.
+
+**If the error persists after that fix:** Chromium-based browsers (Brave, Chrome)
+on Wayland open URLs through the XDG desktop portal, not `xdg-open`. Once an app has
+been picked 3 times, the portal reuses it and ignores mimeapps.list. Check what it has
+stored, then change it to SCALUS:
+```
+busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore \
+  org.freedesktop.impl.portal.PermissionStore Lookup ss desktop-used-apps x-scheme-handler/rdp
+busctl --user call org.freedesktop.impl.portal.PermissionStore /org/freedesktop/impl/portal/PermissionStore \
+  org.freedesktop.impl.portal.PermissionStore SetPermission sbssas desktop-used-apps true x-scheme-handler/rdp "" 2 scalus 3
+```
+Check whether the click reached SCALUS: a launch writes a `Parsing URL` line to `~/.SCALUS/scalus.log`.
